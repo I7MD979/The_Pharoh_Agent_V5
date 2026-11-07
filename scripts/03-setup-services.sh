@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Step 3 — install & start the llama-cyberstrike systemd service, then verify
+# the OpenAI-compatible API on port 8000.
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+MODEL_FILE="$(find "$MODELS_DIR" -maxdepth 1 -name '*Q4_K_M*.gguf' | head -1)"
+[ -n "$MODEL_FILE" ] || { log_error "No Q4_K_M model in $MODELS_DIR — run step 2 first."; exit 1; }
+
+LLAMA_BIN="$(command -v llama-server || true)"
+[ -n "$LLAMA_BIN" ] || { log_error "llama-server not on PATH — run step 1 first."; exit 1; }
+LLAMA_LIBDIR="$(dirname "$LLAMA_BIN")"
+# /usr/local/bin is a symlink farm; resolve to the real lib dir.
+LLAMA_LIBDIR="$(dirname "$(readlink -f "$LLAMA_BIN")")"
+
+log_info "Generating systemd unit (user=$STACK_USER, model=$MODEL_FILE)"
+sed -e "s|__STACK_USER__|$STACK_USER|g" \
+    -e "s|__STACK_HOME__|$STACK_HOME|g" \
+    -e "s|__MODEL_FILE__|$MODEL_FILE|g" \
+    -e "s|__LLAMA_LIBDIR__|$LLAMA_LIBDIR|g" \
+    "$REPO_ROOT/systemd/llama-cyberstrike.service" \
+  | sudo tee /etc/systemd/system/llama-cyberstrike.service >/dev/null
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now llama-cyberstrike
+
+# --- wait for the model to load (35B can take a couple of minutes) -----------
+log_info "Waiting for llama-server on :$LLAMA_PORT (model load can take a while)…"
+for i in $(seq 1 60); do
+  if curl -fsS "http://localhost:$LLAMA_PORT/v1/models" >/dev/null 2>&1; then
+    break
+  fi
+  if ! systemctl is-active --quiet llama-cyberstrike; then
+    log_error "Service died while loading. Recent logs:"
+    sudo journalctl -u llama-cyberstrike -n 40 --no-pager
+    exit 1
+  fi
+  sleep 5
+done
+
+log_info "GET /v1/models:"
+curl -fsS "http://localhost:$LLAMA_PORT/v1/models" | python3 -m json.tool
+
+log_info "Chat completion smoke test ('say OK')…"
+RESP="$(curl -fsS "http://localhost:$LLAMA_PORT/v1/chat/completions" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"cyberstrike","messages":[{"role":"user","content":"say OK"}],"max_tokens":16}')"
+echo "$RESP" | python3 -m json.tool
+echo "$RESP" | grep -q '"content"' || { log_error "Chat completion returned no content."; exit 1; }
+
+log_ok "llama-cyberstrike is serving on http://0.0.0.0:$LLAMA_PORT"

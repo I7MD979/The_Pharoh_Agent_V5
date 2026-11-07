@@ -1,0 +1,18 @@
+[Unit]
+Description=HexStrike AI security tools server on :8888 (MCP via stdio bridge)
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=__STACK_USER__
+Group=__STACK_USER__
+WorkingDirectory=__HEXSTRIKE_DIR__
+Environment=HEXSTRIKE_PORT=8888
+ExecStart=__HEXSTRIKE_DIR__/venv/bin/python3 __HEXSTRIKE_DIR__/hexstrike_server.py --port 8888
+Restart=on-failure
+RestartSec=10
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

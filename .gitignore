@@ -1,0 +1,11 @@
+# Local artifacts — the repo is the installer, not the payloads
+*.gguf
+models/
+llama.cpp/
+Hexstrike-AI/
+*.zip
+*.log
+__pycache__/
+venv/
+node_modules/
+.DS_Store

@@ -1,0 +1,25 @@
+[Unit]
+Description=llama.cpp server — Huihui-CyberStrike-OffSec-35B (Q4_K_M) on :8000
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=__STACK_USER__
+Group=__STACK_USER__
+WorkingDirectory=__STACK_HOME__
+Environment=LD_LIBRARY_PATH=__LLAMA_LIBDIR__
+ExecStart=/usr/local/bin/llama-server \
+  -m __MODEL_FILE__ \
+  --alias cyberstrike \
+  --host 0.0.0.0 --port 8000 \
+  -c 65536 -ngl 999 \
+  --flash-attn --jinja
+Restart=on-failure
+RestartSec=10
+# Allow large model + KV cache
+LimitMEMLOCK=infinity
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
