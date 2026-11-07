@@ -6,8 +6,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-MODEL_FILE="$(find "$MODELS_DIR" -maxdepth 1 -name '*Q4_K_M*.gguf' | head -1)"
-[ -n "$MODEL_FILE" ] || { log_error "No Q4_K_M model in $MODELS_DIR — run step 2 first."; exit 1; }
+MODEL_FILE="$(find "$MODELS_DIR" -maxdepth 1 -name '*Q4_K*.gguf' | head -1)"
+[ -n "$MODEL_FILE" ] || { log_error "No Q4_K model in $MODELS_DIR — run step 2 first."; exit 1; }
 
 LLAMA_BIN="$(command -v llama-server || true)"
 [ -n "$LLAMA_BIN" ] || { log_error "llama-server not on PATH — run step 1 first."; exit 1; }
