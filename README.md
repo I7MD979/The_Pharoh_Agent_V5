@@ -97,6 +97,8 @@ opencode run "run a quick nmap -sV scan against scanme.nmap.org and summarize op
 | ---------------------------------------------- | -------------------------------------------------------------------------------------------- |
 | **GPU OOM** on service start                   | Lower context: `-c 32768`; or partial offload `-ngl 60`; check `nvidia-smi` for other tenants |
 | `llama-server` fails with missing `libcudart`  | Install CUDA runtime (`nvidia-cuda-toolkit`) or re-run step 1 (it fetches the cudart bundle)  |
+| `GLIBC_2.38 not found` from prebuilt binary    | Current llama.cpp prebuilts target Ubuntu 24.04; step 1 detects this and auto-falls back to a source build |
+| nvcc fails with `cannot execute cc1plus`       | gcc/g++ version skew (e.g. gcc 12 + g++ 11): `sudo apt install g++-$(gcc -dumpversion)` — step 1 now does this automatically |
 | **Model 404** at `/v1/chat/completions`        | The opencode config uses model id `cyberstrike`; llama.cpp serves it under the file alias — keep `--alias cyberstrike` in the unit (already set) |
 | **MCP not connecting** in opencode             | Check `systemctl status hexstrike`, then `curl localhost:8888/health`; opencode talks to HexStrike via stdio (`hexstrike_mcp.py`) which bridges to `:8888` — the service must be up |
 | Hugging Face download stalls                   | `export HF_HUB_ENABLE_HF_TRANSFER=1` (installer already tries) or re-run step 2 — it resumes   |

@@ -97,6 +97,13 @@ install_prebuilt() {
 build_from_source() {
   log_info "Building llama.cpp from source with CUDA…"
   apt_install build-essential cmake git libcurl4-openssl-dev ccache
+  # gcc/g++ version skew breaks nvcc (gcc 12 + g++ 11 → cc1plus execvp error).
+  # Ensure a matching cc1plus exists for the default gcc.
+  local gcc_ver; gcc_ver="$(gcc -dumpversion)"
+  if [ ! -e "/usr/lib/gcc/x86_64-linux-gnu/$gcc_ver/cc1plus" ]; then
+    log_info "gcc is $gcc_ver but g++-$gcc_ver is missing — installing it."
+    apt_install "g++-$gcc_ver" || apt_install g++
+  fi
   # Prefer an existing /usr/local/cuda toolkit over apt's outdated one.
   local cuda_bin=""
   for d in /usr/local/cuda/bin /usr/local/cuda-*/bin; do
