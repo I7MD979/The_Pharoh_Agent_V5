@@ -88,8 +88,11 @@ opencode run "run a quick nmap -sV scan against scanme.nmap.org and summarize op
    (point `-m` at the new file; tune `-c`/`-ngl` as needed).
 3. `sudo systemctl daemon-reload && sudo systemctl restart llama-cyberstrike`.
 
-> VRAM note: 35B Q4_K_M + 65 536-token context with `-ngl 999` fits in 48 GB VRAM.
-> For larger models, lower `-c` or set `-ngl` to a partial layer count.
+> VRAM note: this model is a Qwen3.5-MoE with GQA (2 KV heads) — even at its
+> **native 262 144-token context** (set via `-c 262144`) the f16 KV cache is only
+> ~10 GB, so model + KV + buffers use ~26 GB of the 48 GB VRAM with zero
+> quantization or RoPE scaling. For larger models, lower `-c` or set `-ngl` to a
+> partial layer count.
 
 ## Troubleshooting
 
@@ -103,6 +106,7 @@ opencode run "run a quick nmap -sV scan against scanme.nmap.org and summarize op
 | **MCP not connecting** in opencode             | Check `systemctl status hexstrike`, then `curl localhost:8888/health`; opencode talks to HexStrike via stdio (`hexstrike_mcp.py`) which bridges to `:8888` — the service must be up |
 | Hugging Face download stalls                   | `export HF_HUB_ENABLE_HF_TRANSFER=1` (installer already tries) or re-run step 2 — it resumes   |
 | `opencode` not found                           | Ensure npm global bin is on PATH: `npm config get prefix` → add `<prefix>/bin` to `~/.bashrc`  |
+| Chat API returns **empty `content`**            | The model is a reasoning model — output first goes to `reasoning_content`. Give it enough `max_tokens` (e.g. ≥512) or it spends the whole budget thinking |
 
 ## Repo layout
 

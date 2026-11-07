@@ -13,7 +13,7 @@ ExecStart=/usr/local/bin/llama-server \
   -m __MODEL_FILE__ \
   --alias cyberstrike \
   --host 0.0.0.0 --port 8000 \
-  -c 65536 -ngl 999 \
+  -c 262144 -ngl 999 \
   --flash-attn on --jinja
 Restart=on-failure
 RestartSec=10

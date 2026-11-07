@@ -94,7 +94,8 @@ sed -e "s|__STACK_USER__|$STACK_USER|g" \
   | sudo tee /etc/systemd/system/hexstrike.service >/dev/null
 
 sudo systemctl daemon-reload
-sudo systemctl enable --now hexstrike
+sudo systemctl enable hexstrike
+sudo systemctl restart hexstrike
 
 # --- verify ---------------------------------------------------------------------
 log_info "Waiting for HexStrike on :$HEXSTRIKE_PORT…"

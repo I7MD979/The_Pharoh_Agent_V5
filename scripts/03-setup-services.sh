@@ -24,7 +24,9 @@ sed -e "s|__STACK_USER__|$STACK_USER|g" \
   | sudo tee /etc/systemd/system/llama-cyberstrike.service >/dev/null
 
 sudo systemctl daemon-reload
-sudo systemctl enable --now llama-cyberstrike
+# restart (not just enable --now) so a re-run actually applies changed flags
+sudo systemctl enable llama-cyberstrike
+sudo systemctl restart llama-cyberstrike
 
 # --- wait for the model to load (35B can take a couple of minutes) -----------
 log_info "Waiting for llama-server on :$LLAMA_PORT (model load can take a while)…"
