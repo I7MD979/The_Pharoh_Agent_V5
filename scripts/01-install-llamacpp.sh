@@ -121,7 +121,19 @@ build_from_source() {
     git clone --depth 1 https://github.com/ggml-org/llama.cpp "$LLAMA_DIR"
   fi
   rm -rf "$LLAMA_DIR/build"   # clean any failed configure cache
+  # Build only for the GPU(s) actually present — the default "all
+  # architectures" multiplies flash-attention template compile time by ~7.
+  local cuda_arch=""
+  local cc; cc="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d ' .')"
+  if [ -n "$cc" ]; then
+    cuda_arch="$cc"
+    log_info "Detected GPU compute capability → CMAKE_CUDA_ARCHITECTURES=$cuda_arch"
+  else
+    cuda_arch="86;89;90"
+    log_warn "Could not detect compute capability — using '$cuda_arch'."
+  fi
   cmake -S "$LLAMA_DIR" -B "$LLAMA_DIR/build" -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_CUDA_ARCHITECTURES="$cuda_arch" \
     ${cuda_bin:+-DCMAKE_CUDA_COMPILER="$cuda_bin/nvcc"}
   cmake --build "$LLAMA_DIR/build" --config Release -j"$(nproc)"
   sudo ln -sf "$LLAMA_DIR"/build/bin/llama-* /usr/local/bin/
