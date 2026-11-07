@@ -42,9 +42,22 @@ for t in "${APT_TOOLS[@]}"; do
   command -v "${t%%-*}" >/dev/null 2>&1 || TO_INSTALL+=("$pkg")
 done
 if [ "${#TO_INSTALL[@]}" -gt 0 ]; then
-  log_info "Installing security tools via apt: ${TO_INSTALL[*]}"
+  # Most security tools live in universe — make sure it is enabled.
+  sudo add-apt-repository -y universe >/dev/null 2>&1 || true
   sudo apt-get update
-  apt_install "${TO_INSTALL[@]}" || log_warn "Some apt packages unavailable — continuing."
+  # One unknown package name aborts the WHOLE apt-get install — filter first.
+  AVAILABLE=()
+  for p in "${TO_INSTALL[@]}"; do
+    if apt-cache show "$p" >/dev/null 2>&1; then
+      AVAILABLE+=("$p")
+    else
+      log_warn "Package not in apt repos, skipping: $p"
+    fi
+  done
+  if [ "${#AVAILABLE[@]}" -gt 0 ]; then
+    log_info "Installing security tools via apt: ${AVAILABLE[*]}"
+    apt_install "${AVAILABLE[@]}"
+  fi
 fi
 
 # nuclei via Go (README-preferred), fallback to apt/pipx-less download.
