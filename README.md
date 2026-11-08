@@ -30,7 +30,7 @@ A fully local, self-hosted AI pentesting stack for **Ubuntu 22.04** with an NVID
 git clone https://github.com/I7MD979/The_Pharoh_Agent_V5.git
 cd The_Pharoh_Agent_V5
 chmod +x install.sh start-stack.sh stop-stack.sh scripts/*.sh
-./install.sh            # full setup: llama.cpp → model → services → HexStrike → opencode → verify
+./install.sh            # full setup: llama.cpp → model → services → HexStrike → opencode → tools → verify
 ```
 
 The installer is idempotent — re-running it skips finished steps. It auto-detects
@@ -48,10 +48,17 @@ your login user/home and generates the systemd units from `systemd/*.service` te
    service and verifies `curl localhost:8000/v1/models` and a `"say OK"` chat completion.
 4. `scripts/04-install-hexstrike.sh` — clones `netcuter/Hexstrike-AI` into `~/Hexstrike-AI`,
    creates its venv, installs Python requirements and the security tools
-   (nmap, nuclei, sqlmap, gobuster, …), installs + enables the `hexstrike` service.
+   (nmap, nuclei, sqlmap, gobuster, …), patches the MCP bridge request timeout
+   (300 s → 1800 s), installs + enables the `hexstrike` service.
 5. `scripts/05-install-opencode.sh` — installs Node.js + `opencode-ai`, writes
-   `~/.config/opencode/opencode.json` (local provider on port 8000 + HexStrike MCP over stdio).
-6. `scripts/06-verify.sh` — end-to-end checks (see below).
+   `~/.config/opencode/opencode.json` (local provider on port 8000 + HexStrike MCP over stdio,
+   with a 1-hour MCP request timeout for long scans).
+6. `scripts/06-install-all-tools.sh` — installs the **full** HexStrike toolset (~120 tools):
+   apt packages, Go tools, pip CLIs, Ruby gems, GitHub release binaries (feroxbuster,
+   rustscan, trivy, terrascan, kube-bench, ghidra, …), Metasploit via the Rapid7 installer,
+   radare2 from source, OWASP ZAP, and git-based tools (Responder, commix, spiderfoot, …).
+   Fault-tolerant: individual failures are summarized at the end, never abort the run.
+7. `scripts/07-verify.sh` — end-to-end checks (see below).
 
 ## Managing the stack
 
@@ -73,13 +80,17 @@ opencode run "list your available MCP tools"
 opencode run "run a quick nmap -sV scan against scanme.nmap.org and summarize open ports"
 ```
 
-## Verification checklist (run `./scripts/06-verify.sh`)
+## Verification checklist (run `./scripts/07-verify.sh`)
 
 1. `curl localhost:8000/v1/models` returns the CyberStrike model id.
 2. Chat completion `"say OK"` returns text.
 3. HexStrike tool list includes `nmap`, `nuclei`, `sqlmap`.
 4. `opencode run "list your available MCP tools"` shows HexStrike tools.
 5. Real test: nmap scan of `scanme.nmap.org` executed through the MCP tool.
+
+The verifier waits for service readiness (llama.cpp can take minutes to load the model),
+retries the two agent-based checks up to 3 times (local models are non-deterministic at
+tool calling), and pins the exact MCP tool names in its prompts.
 
 ## Swapping the model later
 
@@ -88,17 +99,20 @@ opencode run "run a quick nmap -sV scan against scanme.nmap.org and summarize op
    (point `-m` at the new file; tune `-c`/`-ngl` as needed).
 3. `sudo systemctl daemon-reload && sudo systemctl restart llama-cyberstrike`.
 
-> VRAM note: this model is a Qwen3.5-MoE with GQA (2 KV heads) — even at its
-> **native 262 144-token context** (set via `-c 262144`) the f16 KV cache is only
-> ~10 GB, so model + KV + buffers use ~26 GB of the 48 GB VRAM with zero
-> quantization or RoPE scaling. For larger models, lower `-c` or set `-ngl` to a
-> partial layer count.
+> VRAM/RAM note: the default context is **131 072 tokens** with **q8_0-quantized KV cache**
+> (`--cache-type-k q8_0 --cache-type-v q8_0`, flash attention on). Do **not** raise `-c`
+> to the model's native 262 144 without quantization — on the 96 GB RAM / 48 GB VRAM
+> reference machine that exhausted all RAM and swap and got processes OOM-killed.
+> With 131 072 + q8_0 KV the stack leaves plenty of headroom for heavy tool builds.
 
 ## Troubleshooting
 
 | Symptom                                        | Fix                                                                                          |
 | ---------------------------------------------- | -------------------------------------------------------------------------------------------- |
 | **GPU OOM** on service start                   | Lower context: `-c 32768`; or partial offload `-ngl 60`; check `nvidia-smi` for other tenants |
+| **System RAM exhausted** / builds OOM-killed   | Context too large. Use the default `-c 131072` + q8_0 KV cache; add a swapfile for headroom   |
+| MCP tool call fails instantly with **"Timed out, retry."** | opencode's MCP request timeout defaults to 5 s — `config/opencode.json` sets `"timeout": 3600000`. Also step 4 patches the MCP bridge HTTP timeout to 1800 s |
+| Step 6 verify fails with agent reading `logs/<timestamp>/…` | Cold start race — the verifier now waits for `/v1/models` + `/health` and retries agent checks |
 | `llama-server` fails with missing `libcudart`  | Install CUDA runtime (`nvidia-cuda-toolkit`) or re-run step 1 (it fetches the cudart bundle)  |
 | `GLIBC_2.38 not found` from prebuilt binary    | Current llama.cpp prebuilts target Ubuntu 24.04; step 1 detects this and auto-falls back to a source build |
 | nvcc fails with `cannot execute cc1plus`       | gcc/g++ version skew (e.g. gcc 12 + g++ 11): `sudo apt install g++-$(gcc -dumpversion)` — step 1 now does this automatically |
@@ -107,6 +121,8 @@ opencode run "run a quick nmap -sV scan against scanme.nmap.org and summarize op
 | Hugging Face download stalls                   | `export HF_HUB_ENABLE_HF_TRANSFER=1` (installer already tries) or re-run step 2 — it resumes   |
 | `opencode` not found                           | Ensure npm global bin is on PATH: `npm config get prefix` → add `<prefix>/bin` to `~/.bashrc`  |
 | Chat API returns **empty `content`**            | The model is a reasoning model — output first goes to `reasoning_content`. Give it enough `max_tokens` (e.g. ≥512) or it spends the whole budget thinking |
+| apt hangs on **wireshark-common** during step 6 | Already handled: the installer pre-seeds the debconf answer (`install-setuid=false`) |
+| radare2 build fails with `ccache gcc cannot create executables` | Handled: step 6 builds radare2 with `CCACHE_DISABLE=1` |
 
 ## Repo layout
 
@@ -124,7 +140,8 @@ opencode run "run a quick nmap -sV scan against scanme.nmap.org and summarize op
     ├── 03-setup-services.sh
     ├── 04-install-hexstrike.sh
     ├── 05-install-opencode.sh
-    └── 06-verify.sh
+    ├── 06-install-all-tools.sh  # full ~120-tool HexStrike toolset
+    └── 07-verify.sh
 ```
 
 ## Legal note
