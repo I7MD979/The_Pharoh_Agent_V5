@@ -39,7 +39,8 @@ run_step 2 02-download-model.sh
 run_step 3 03-setup-services.sh
 run_step 4 04-install-hexstrike.sh
 run_step 5 05-install-opencode.sh
-run_step 6 06-verify.sh
+run_step 6 06-install-all-tools.sh
+run_step 7 07-verify.sh
 
 log_banner "INSTALL COMPLETE"
 log_ok "llama.cpp   → http://localhost:8000  (model: cyberstrike)"

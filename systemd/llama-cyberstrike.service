@@ -13,8 +13,8 @@ ExecStart=/usr/local/bin/llama-server \
   -m __MODEL_FILE__ \
   --alias cyberstrike \
   --host 0.0.0.0 --port 8000 \
-  -c 262144 -ngl 999 \
-  --flash-attn on --jinja
+  -c 131072 -ngl 999 \
+  --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --jinja
 Restart=on-failure
 RestartSec=10
 # Allow large model + KV cache

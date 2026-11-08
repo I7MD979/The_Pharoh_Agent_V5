@@ -5,7 +5,7 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "CyberStrike",
       "options": { "baseURL": "http://localhost:8000/v1", "apiKey": "none" },
-      "models": { "cyberstrike": { "name": "CyberStrike-35B", "limit": { "context": 262144, "output": 8192 } } }
+      "models": { "cyberstrike": { "name": "CyberStrike-35B", "limit": { "context": 131072, "output": 8192 } } }
     }
   },
   "model": "local/cyberstrike",
