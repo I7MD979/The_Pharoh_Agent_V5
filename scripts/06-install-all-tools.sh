@@ -27,12 +27,12 @@ ok()   { log_ok "$*"; }
 bad()  { log_error "$*"; FAILS+=("$*"); }
 have() { command -v "$1" >/dev/null 2>&1; }
 
-# gh_asset <repo> <asset-regex> <binary-name>
-# Download latest GitHub release asset and install the binary to /usr/local/bin.
+# gh_asset <repo> <asset-regex> <binary-name> [ref, e.g. tags/2.2.2 — default latest]
+# Download a GitHub release asset and install the binary to /usr/local/bin.
 gh_asset() {
-  local repo="$1" pattern="$2" name="$3" url tmp
+  local repo="$1" pattern="$2" name="$3" ref="${4:-latest}" url tmp
   have "$name" && { ok "$name already installed"; return 0; }
-  url="$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest" \
+  url="$(curl -fsSL "https://api.github.com/repos/$repo/releases/$ref" \
         | jq -r '.assets[].browser_download_url' | grep -E "$pattern" | head -1)"
   [ -n "$url" ] || { bad "$name: no matching release asset for $repo"; return 1; }
   tmp="$(mktemp -d)"
@@ -108,7 +108,7 @@ declare -A GO_TOOLS=(
   [dalfox]="github.com/hahwul/dalfox/v2@latest"
   [hakrawler]="github.com/hakluke/hakrawler@latest"
   [jaeles]="github.com/jaeles-project/jaeles@latest"
-  [gau]="github.com/tomnomnom/gau/v2/cmd/gau@latest"
+  [gau]="github.com/lc/gau/v2/cmd/gau@latest"
   [waybackurls]="github.com/tomnomnom/waybackurls@latest"
   [qsreplace]="github.com/tomnomnom/qsreplace@latest"
   [anew]="github.com/tomnomnom/anew@latest"
@@ -143,8 +143,9 @@ done
 
 # ============================================================================
 log_banner "5/7 GitHub release binaries"
-gh_asset "epi052/feroxbuster"      'linux-x86_64.*\.zip$'   feroxbuster || true
-gh_asset "RustScan/RustScan"       '_amd64\.deb$'           rustscan || true
+gh_asset "epi052/feroxbuster"      'x86_64-linux-feroxbuster\.zip$' feroxbuster || true
+# rustscan's latest releases ship no assets — pin the last one that does
+gh_asset "RustScan/RustScan"       '_amd64\.deb$'           rustscan "tags/2.2.2" || true
 gh_asset "Sh1Yo/x8"                'linux'                  x8 || true
 gh_asset "io12/pwninit"            '/pwninit$'              pwninit || true
 gh_asset "tenable/terrascan"       'Linux_x86_64\.tar\.gz$' terrascan || true
@@ -211,15 +212,16 @@ if ! have msfconsole; then
   fi
 fi
 
-# radare2 — build from source (not packaged for jammy). ccache on this image
-# is broken ("ccache gcc cannot create executables") → disable it explicitly.
+# radare2 — build from source (not packaged for jammy). Two traps on this image:
+# ccache is broken ("ccache gcc cannot create executables") and sys/install.sh
+# downgrades to $SUDO_USER, which cannot write a root-owned clone — disable both.
 if ! have radare2 && ! have r2; then
   log_info "Building radare2 from source (this takes a few minutes)…"
   if [ ! -d /opt/radare2 ]; then
     sudo git clone --depth 1 https://github.com/radareorg/radare2 /opt/radare2 >/dev/null 2>&1
   fi
   sudo git config --global --add safe.directory /opt/radare2 2>/dev/null || true
-  if [ -d /opt/radare2 ] && ( cd /opt/radare2 && sudo env CCACHE_DISABLE=1 CC=gcc CXX=g++ bash sys/install.sh >/tmp/r2-build.log 2>&1 ); then
+  if [ -d /opt/radare2 ] && ( cd /opt/radare2 && sudo env -u SUDO_USER CCACHE_DISABLE=1 CC=gcc CXX=g++ bash sys/install.sh >/tmp/r2-build.log 2>&1 ); then
     ok "radare2"
   else
     bad "radare2 (source build — see /tmp/r2-build.log)"
@@ -249,18 +251,20 @@ for g in wpscan evil-winrm; do
   sudo gem install "$g" --no-document >/dev/null 2>&1 && ok "gem: $g" || bad "gem: $g"
 done
 
-# netexec — requires Python >= 3.11; jammy ships 3.10, so give it its own venv
+# netexec — not on PyPI; requires Python >= 3.11 (jammy ships 3.10), so give it
+# its own python3.11 venv and install from git. python3.11-dev is required
+# (netifaces compiles C extensions needing Python.h).
 if ! have nxc; then
   if ! command -v python3.11 >/dev/null 2>&1; then
     log_info "Installing Python 3.11 (deadsnakes) for netexec…"
     sudo add-apt-repository -y ppa:deadsnakes/ppa >/dev/null 2>&1
     sudo apt-get update -qq >/dev/null 2>&1
-    sudo apt-get install -y --no-install-recommends python3.11 python3.11-venv >/dev/null 2>&1
+    sudo apt-get install -y --no-install-recommends python3.11 python3.11-venv python3.11-dev >/dev/null 2>&1
   fi
   if command -v python3.11 >/dev/null 2>&1; then
     sudo python3.11 -m venv /opt/nxc-venv 2>/dev/null \
       && sudo /opt/nxc-venv/bin/pip install --quiet --upgrade pip >/dev/null 2>&1 \
-      && sudo /opt/nxc-venv/bin/pip install --quiet netexec >/dev/null 2>&1 \
+      && sudo /opt/nxc-venv/bin/pip install --quiet git+https://github.com/Pennyw0rth/NetExec.git >/dev/null 2>&1 \
       && sudo ln -sf /opt/nxc-venv/bin/nxc /usr/local/bin/nxc \
       && sudo ln -sf /opt/nxc-venv/bin/nxc /usr/local/bin/netexec \
       && ok "netexec (python3.11 venv)" || bad "netexec (venv install)"
@@ -326,21 +330,75 @@ fi
 # hashcat-utils — tiny C tools, just make
 if ! have cap2hccapx.bin && [ ! -d /opt/hashcat-utils ]; then
   if sudo git clone --depth 1 https://github.com/hashcat/hashcat-utils.git /opt/hashcat-utils >/dev/null 2>&1 \
-     && sudo make -s -C /opt/hashcat-utils/src >/dev/null 2>&1; then
+     && sudo make -s -C /opt/hashcat-utils >/dev/null 2>&1; then
     for b in /opt/hashcat-utils/src/*.bin; do sudo ln -sf "$b" "/usr/local/bin/$(basename "$b")"; done
     ok "hashcat-utils"
   else
     bad "hashcat-utils"
   fi
 fi
-# hashpump — needs g++ + libssl
+# hashpump — original bwall/HashPump repo is gone; fork has no top-level
+# Makefile (Eclipse layout), so compile the sources directly.
 if ! have hashpump; then
-  if sudo git clone --depth 1 https://github.com/bwall/HashPump /opt/hashpump >/dev/null 2>&1 \
-     && sudo make -s -C /opt/hashpump >/dev/null 2>&1 \
-     && sudo make -s -C /opt/hashpump install >/dev/null 2>&1; then
+  if [ ! -d /opt/hashpump ]; then
+    sudo git clone --depth 1 https://github.com/miekrr/HashPump /opt/hashpump >/dev/null 2>&1
+  fi
+  if [ -d /opt/hashpump ] && \
+     sudo g++ -O2 -o /usr/local/bin/hashpump /opt/hashpump/*.cpp -lssl -lcrypto 2>/dev/null; then
     ok "hashpump"
   else
     bad "hashpump"
+  fi
+fi
+
+# --- name-mismatch symlinks ---------------------------------------------------
+# HexStrike's /health probes command names that don't always match the binary
+# each package actually ships. Symlink the canonical names so detection works.
+declare -A NAME_LINKS=(
+  [metasploit]=/usr/bin/msfconsole        [httpie]=/usr/bin/http
+  [one-gadget]=/usr/local/bin/one_gadget  [ophcrack]=/usr/bin/ophcrack-cli
+  [theharvester]=/usr/local/bin/theHarvester [scout-suite]=/usr/local/bin/scout
+  [shodan-cli]=/usr/local/bin/shodan      [censys-cli]=/usr/local/bin/censys
+  [volatility]=/usr/local/bin/vol         [volatility3]=/usr/local/bin/vol
+  [ropgadget]=/usr/local/bin/ROPgadget    [pwntools]=/usr/local/bin/pwn
+  [exploit-db]=/usr/local/bin/searchsploit [sleuthkit]=/usr/bin/icat
+  [jwt-analyzer]=/usr/local/bin/jwt_tool  [graphql-scanner]=/usr/local/bin/graphql-cop
+  [hashcat-utils]=/usr/local/bin/cap2hccapx.bin
+)
+for k in "${!NAME_LINKS[@]}"; do
+  if [ -e "${NAME_LINKS[$k]}" ] && [ ! -e "/usr/local/bin/$k" ]; then
+    sudo ln -sf "${NAME_LINKS[$k]}" "/usr/local/bin/$k" && ok "link: $k → ${NAME_LINKS[$k]}"
+  fi
+done
+# /opt resource tools probed by /health as commands
+sudo ln -sf /opt/docker-bench-security/docker-bench-security.sh /usr/local/bin/docker-bench-security 2>/dev/null || true
+sudo ln -sf /opt/libc-database/get /usr/local/bin/libc-database 2>/dev/null || true
+
+# hash-identifier — single perl script from Kali's repo
+if ! have hash-identifier; then
+  curl -fsSL -m 60 "https://gitlab.com/kalilinux/packages/hash-identifier/-/raw/kali/master/hash-id.py" \
+    -o /tmp/hash-id.py 2>/dev/null \
+    && sudo install -m 0755 /tmp/hash-id.py /usr/local/bin/hash-identifier \
+    && ok "hash-identifier" || bad "hash-identifier"
+fi
+
+# bulk-extractor — not packaged for jammy; build from source (needs libre2-dev)
+if ! have bulk_extractor && ! have bulk-extractor; then
+  log_info "Building bulk-extractor from source…"
+  sudo apt-get install -y --no-install-recommends autoconf automake libtool flex bison \
+    libsqlite3-dev libewf-dev libre2-dev >/dev/null 2>&1
+  [ -d /opt/bulk_extractor ] || \
+    sudo git clone --depth 1 https://github.com/simsong/bulk_extractor.git /opt/bulk_extractor >/dev/null 2>&1
+  if [ -d /opt/bulk_extractor ] && \
+     ( cd /opt/bulk_extractor \
+       && sudo bash bootstrap.sh >/tmp/be-build.log 2>&1 \
+       && sudo ./configure >>/tmp/be-build.log 2>&1 \
+       && sudo make -j"$(nproc)" >>/tmp/be-build.log 2>&1 \
+       && sudo make install >>/tmp/be-build.log 2>&1 ); then
+    sudo ln -sf /usr/local/bin/bulk_extractor /usr/local/bin/bulk-extractor
+    ok "bulk-extractor"
+  else
+    bad "bulk-extractor (source build — see /tmp/be-build.log)"
   fi
 fi
 
