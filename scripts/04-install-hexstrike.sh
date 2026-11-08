@@ -83,6 +83,19 @@ if ! command -v nuclei >/dev/null 2>&1; then
   nuclei -update-templates >/dev/null 2>&1 || true
 fi
 
+# --- patch MCP bridge timeouts --------------------------------------------------
+# The MCP bridge (hexstrike_mcp.py, spawned by opencode per session) hard-codes
+# a 300 s HTTP timeout per request to the HexStrike server. Real scans (nuclei,
+# full vulnerability assessments) routinely exceed that → "Timed out, retry."
+# Raise it to 30 minutes. Idempotent: only touches the stock default.
+if grep -q '^DEFAULT_REQUEST_TIMEOUT = 300' "$HEXSTRIKE_DIR/hexstrike_mcp.py"; then
+  sed -i 's/^DEFAULT_REQUEST_TIMEOUT = 300/DEFAULT_REQUEST_TIMEOUT = 1800/' \
+    "$HEXSTRIKE_DIR/hexstrike_mcp.py"
+  log_ok "Patched hexstrike_mcp.py: request timeout 300s → 1800s"
+else
+  log_info "hexstrike_mcp.py timeout already patched (or upstream changed) — skipping."
+fi
+
 # --- systemd service ------------------------------------------------------------
 [ -f "$HEXSTRIKE_DIR/hexstrike_server.py" ] || {
   log_error "hexstrike_server.py not found in $HEXSTRIKE_DIR — repo layout changed?"; exit 1; }
