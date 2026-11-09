@@ -43,7 +43,7 @@ run_step 6 06-install-all-tools.sh
 run_step 7 07-verify.sh
 
 log_banner "INSTALL COMPLETE"
-log_ok "llama.cpp   → http://localhost:8000  (model: cyberstrike)"
+log_ok "llama.cpp   → http://localhost:8000  (model: $MODEL_ALIAS)"
 log_ok "HexStrike   → http://localhost:8888  (MCP via stdio bridge)"
 log_ok "opencode    → run 'opencode' to start the agent"
 log_info "Manage with: ./start-stack.sh / ./stop-stack.sh"

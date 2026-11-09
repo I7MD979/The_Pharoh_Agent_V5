@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Step 5 — install opencode and wire it to the local CyberStrike model
+# Step 5 — install opencode and wire it to the local Qwen3.8 agentic model
 # (OpenAI-compatible on :8000) + HexStrike MCP (stdio bridge to :8888).
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
@@ -34,6 +34,7 @@ log_ok "opencode: $(command -v opencode)"
 # --- config --------------------------------------------------------------------
 mkdir -p "$OPENCODE_CONFIG_DIR"
 sed -e "s|__HEXSTRIKE_DIR__|$HEXSTRIKE_DIR|g" \
+    -e "s|__MODEL_ALIAS__|$MODEL_ALIAS|g" \
     "$REPO_ROOT/config/opencode.json" > "$OPENCODE_CONFIG_DIR/opencode.json"
 log_ok "Wrote $OPENCODE_CONFIG_DIR/opencode.json"
 cat "$OPENCODE_CONFIG_DIR/opencode.json"
@@ -42,4 +43,4 @@ cat "$OPENCODE_CONFIG_DIR/opencode.json"
 [ -f "$HEXSTRIKE_DIR/hexstrike_mcp.py" ] || \
   log_warn "hexstrike_mcp.py not found — check the HexStrike repo layout; adjust 'mcp' in opencode.json if its README uses a different entry point."
 
-log_ok "opencode is configured: model=local/cyberstrike, mcp=hexstrike"
+log_ok "opencode is configured: model=local/$MODEL_ALIAS, mcp=hexstrike"

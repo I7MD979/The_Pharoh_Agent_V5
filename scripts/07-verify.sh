@@ -13,7 +13,7 @@ check() { # check <name> <ok:0/1>
 }
 
 # wait_http <url> <max-seconds> — poll until the endpoint answers HTTP 200.
-# Services (especially llama.cpp loading a 35 GB model) need time on first start.
+# Services (especially llama.cpp loading a large model) need time on first start.
 wait_http() {
   local url="$1" max="$2" elapsed=0
   until curl -fsS -o /dev/null -m 5 "$url" 2>/dev/null; do
@@ -33,9 +33,12 @@ else
 fi
 RESP="$(curl -fsS "http://localhost:$LLAMA_PORT/v1/chat/completions" \
   -H 'Content-Type: application/json' \
-  -d '{"model":"cyberstrike","messages":[{"role":"user","content":"say OK"}],"max_tokens":16}' 2>/dev/null || true)"
-echo "$RESP" | grep -q '"content"'
-check "llama.cpp 'say OK' returned text" $?
+  -d "{\"model\":\"$MODEL_ALIAS\",\"messages\":[{\"role\":\"user\",\"content\":\"say OK\"}],\"max_tokens\":512}" 2>/dev/null || true)"
+CONTENT_OK=1
+if echo "$RESP" | python3 -c 'import json,sys; m=json.load(sys.stdin)["choices"][0]["message"]; assert (m.get("content") or "").strip(), "empty content"' 2>/dev/null; then
+  CONTENT_OK=0
+fi
+check "llama.cpp 'say OK' returned text" $CONTENT_OK
 
 # --- 2. HexStrike tool list -------------------------------------------------------
 log_banner "2/4 HexStrike tool list"
@@ -60,7 +63,7 @@ export PATH="$NPM_PREFIX/bin:$STACK_HOME/.opencode/bin:$PATH"
 cd "$STACK_HOME"  # run outside the repo so opencode uses ~/.config/opencode
 MCP_OK=1
 for attempt in 1 2 3; do
-  MCP_OUT="$(timeout 180 opencode run \
+  MCP_OUT="$(timeout 240 opencode run \
     "List the tools provided by the hexstrike MCP server (for example hexstrike_nmap_scan, hexstrike_nuclei_scan, hexstrike_sqlmap_scan). Do not read or write any local files — just list the MCP tool names." \
     2>&1 || true)"
   echo "$MCP_OUT" | tail -20
@@ -75,7 +78,7 @@ check "opencode lists HexStrike MCP tools" $MCP_OK
 log_banner "4/4 real nmap scan via agent (scanme.nmap.org)"
 SCAN_OK=1
 for attempt in 1 2 3; do
-  SCAN_OUT="$(timeout 420 opencode run \
+  SCAN_OUT="$(timeout 600 opencode run \
     "Call the hexstrike_nmap_scan MCP tool with target=scanme.nmap.org and scan_type=-sV, then summarize the open ports from the tool result. Do not read or write any local files — use the MCP tool directly." \
     2>&1 || true)"
   echo "$SCAN_OUT" | tail -30

@@ -8,8 +8,8 @@ A fully local, self-hosted AI pentesting stack for **Ubuntu 22.04** with an NVID
 ```
 ┌─────────────┐   OpenAI API    ┌──────────────────────────────┐
 │  opencode   │ ──────────────► │ llama.cpp  (llama-server)     │
-│  (agent CLI)│  localhost:8000 │ Huihui-CyberStrike-OffSec-35B │
-│             │                 │ -abliterated (GGUF Q4_K_M)    │
+│  (agent CLI)│  localhost:8000 │ Qwen3.8-27B-abliterated       │
+│             │                 │ (GGUF Q8_0, xhigh reasoning)  │
 │             │   MCP (stdio)   └──────────────────────────────┘
 │             │ ──────────────► ┌──────────────────────────────┐
 └─────────────┘                 │ HexStrike AI (MCP tools)      │
@@ -20,9 +20,14 @@ A fully local, self-hosted AI pentesting stack for **Ubuntu 22.04** with an NVID
 
 | Component    | What it is                                                        | Port / transport          |
 | ------------ | ----------------------------------------------------------------- | ------------------------- |
-| llama.cpp    | Serves the CyberStrike 35B Q4_K_M GGUF, OpenAI-compatible API     | `0.0.0.0:8000` (HTTP)     |
+| llama.cpp    | Serves the Qwen3.8-27B Abliterated Q8_0 GGUF, OpenAI-compatible  | `0.0.0.0:8000` (HTTP)     |
 | HexStrike AI | MCP security-tools server (nmap, nuclei, sqlmap, gobuster, …)     | `0.0.0.0:8888` (HTTP API) |
 | opencode     | Terminal AI agent wired to the local model + HexStrike MCP tools  | MCP over stdio            |
+
+The selected model is built for **agentic planning and execution**, native tool calling,
+and long multi-step tasks. Thinking is explicitly enabled at **xhigh** depth, and reasoning
+is preserved across turns to improve decision consistency. The abliterated checkpoint is
+provided by `huihui-ai`; no hosted model API is required.
 
 ## Quick start (fresh Ubuntu 22.04 server)
 
@@ -40,10 +45,12 @@ your login user/home and generates the systemd units from `systemd/*.service` te
 
 1. `scripts/01-install-llamacpp.sh` — downloads the latest prebuilt CUDA release of
    llama.cpp from `ggml-org/llama.cpp`; falls back to building from source with
-   `cmake -DGGML_CUDA=ON`. Verifies `llama-server --version`.
-2. `scripts/02-download-model.sh` — installs `huggingface-hub`, downloads only the
-   `*Q4_K_M*` GGUF (~21 GB) of `huihui-ai/Huihui-CyberStrike-OffSec-35B-abliterated-GGUF`
-   into `~/models` (skips MTP/speculative-decoding extras).
+   `cmake -DGGML_CUDA=ON`. Older managed installs without the required reasoning controls
+   are upgraded. Verifies `llama-server --version`.
+2. `scripts/02-download-model.sh` — installs `huggingface-hub`, then downloads only
+   `Huihui-Qwen3.8-27B-abliterated-Q8_0.gguf` (~29 GB) from
+   `huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF` into `~/models`.
+   The stack runs text-only and does not download the optional vision projector.
 3. `scripts/03-setup-services.sh` — installs + enables the `llama-cyberstrike` systemd
    service and verifies `curl localhost:8000/v1/models` and a `"say OK"` chat completion.
 4. `scripts/04-install-hexstrike.sh` — clones `netcuter/Hexstrike-AI` into `~/Hexstrike-AI`,
@@ -70,59 +77,69 @@ journalctl -u llama-cyberstrike -f      # model server logs
 journalctl -u hexstrike -f              # tools server logs
 ```
 
-Both services auto-start on boot and restart on failure.
+Both services auto-start on boot and restart on failure. The historical service name
+`llama-cyberstrike` is retained for compatibility; it now serves Qwen3.8.
 
 ## Using the agent
 
 ```bash
-opencode                                  # interactive TUI (model: CyberStrike-35B local)
+opencode                                  # interactive TUI (model: Qwen3.8-27B local)
 opencode run "list your available MCP tools"
 opencode run "run a quick nmap -sV scan against scanme.nmap.org and summarize open ports"
 ```
 
+The API model alias is `pharaoh-agent`. Reasoning defaults to `xhigh`; generation uses the
+model author's recommended thinking-mode sampling (`temp=1.0`, `top_p=0.95`, `top_k=20`,
+`min_p=0`). OpenCode allows up to 32,768 output tokens for reasoning plus the final response.
+
 ## Verification checklist (run `./scripts/07-verify.sh`)
 
-1. `curl localhost:8000/v1/models` returns the CyberStrike model id.
-2. Chat completion `"say OK"` returns text.
+1. `curl localhost:8000/v1/models` returns the `pharaoh-agent` model id.
+2. Chat completion `"say OK"` returns non-empty text with enough tokens for reasoning.
 3. HexStrike tool list includes `nmap`, `nuclei`, `sqlmap`.
 4. `opencode run "list your available MCP tools"` shows HexStrike tools.
 5. Real test: nmap scan of `scanme.nmap.org` executed through the MCP tool.
 
 The verifier waits for service readiness (llama.cpp can take minutes to load the model),
-retries the two agent-based checks up to 3 times (local models are non-deterministic at
-tool calling), and pins the exact MCP tool names in its prompts.
+retries the two agent-based checks up to 3 times, and pins the exact MCP tool names in its prompts.
 
 ## Swapping the model later
 
 1. Download a new GGUF into `~/models`.
 2. Edit `ExecStart` in `/etc/systemd/system/llama-cyberstrike.service`
-   (point `-m` at the new file; tune `-c`/`-ngl` as needed).
+   (point `-m` at the new file; tune `-c`/`-ngl` and sampling as needed).
 3. `sudo systemctl daemon-reload && sudo systemctl restart llama-cyberstrike`.
+4. Keep `--alias pharaoh-agent` to avoid changing OpenCode, or update `config/opencode.json`
+   and rerun `scripts/05-install-opencode.sh` if you change the alias.
 
-> VRAM/RAM note: the default context is **131 072 tokens** with **q8_0-quantized KV cache**
-> (`--cache-type-k q8_0 --cache-type-v q8_0`, flash attention on). Do **not** raise `-c`
-> to the model's native 262 144 without quantization — on the 96 GB RAM / 48 GB VRAM
-> reference machine that exhausted all RAM and swap and got processes OOM-killed.
-> With 131 072 + q8_0 KV the stack leaves plenty of headroom for heavy tool builds.
+To change the default downloaded model in the installer, update `HF_REPO` and
+`MODEL_FILENAME` in `scripts/common.sh` together with the model metadata and limits in
+`config/opencode.json` and `systemd/llama-cyberstrike.service`.
+
+> VRAM/RAM note: the configured context is **131,072 tokens** with **q8_0-quantized KV cache**
+> (`--cache-type-k q8_0 --cache-type-v q8_0`, flash attention on). Qwen3.8 natively supports
+> 262,144 tokens, but the larger context is not enabled by default on the 48 GB VRAM target.
+> Check actual model, KV, and compute-buffer usage with `nvidia-smi` before raising `-c`.
 
 ## Troubleshooting
 
 | Symptom                                        | Fix                                                                                          |
 | ---------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| **GPU OOM** on service start                   | Lower context: `-c 32768`; or partial offload `-ngl 60`; check `nvidia-smi` for other tenants |
-| **System RAM exhausted** / builds OOM-killed   | Context too large. Use the default `-c 131072` + q8_0 KV cache; add a swapfile for headroom   |
-| MCP tool call fails instantly with **"Timed out, retry."** | opencode's MCP request timeout defaults to 5 s — `config/opencode.json` sets `"timeout": 3600000`. Also step 4 patches the MCP bridge HTTP timeout to 1800 s |
-| Step 6 verify fails with agent reading `logs/<timestamp>/…` | Cold start race — the verifier now waits for `/v1/models` + `/health` and retries agent checks |
+| **GPU OOM** on service start                   | Lower context: `-c 65536` or `-c 32768`; use a Q6_K/Q4_K GGUF; or reduce offload with `-ngl` |
+| **System RAM exhausted** / builds OOM-killed   | Keep the default `-c 131072` + q8_0 KV cache; add a swapfile for headroom                    |
+| `unknown model architecture` / missing reasoning flags | Qwen3.8 needs a recent llama.cpp — rerun step 1 to upgrade the managed installation     |
+| MCP tool call fails instantly with **"Timed out, retry."** | `config/opencode.json` sets `"timeout": 3600000`; step 4 also patches the bridge HTTP timeout to 1800 s |
+| Step 7 verify fails with agent reading `logs/<timestamp>/…` | Cold start race — the verifier waits for `/v1/models` + `/health` and retries agent checks |
 | `llama-server` fails with missing `libcudart`  | Install CUDA runtime (`nvidia-cuda-toolkit`) or re-run step 1 (it fetches the cudart bundle)  |
-| `GLIBC_2.38 not found` from prebuilt binary    | Current llama.cpp prebuilts target Ubuntu 24.04; step 1 detects this and auto-falls back to a source build |
-| nvcc fails with `cannot execute cc1plus`       | gcc/g++ version skew (e.g. gcc 12 + g++ 11): `sudo apt install g++-$(gcc -dumpversion)` — step 1 now does this automatically |
-| **Model 404** at `/v1/chat/completions`        | The opencode config uses model id `cyberstrike`; llama.cpp serves it under the file alias — keep `--alias cyberstrike` in the unit (already set) |
-| **MCP not connecting** in opencode             | Check `systemctl status hexstrike`, then `curl localhost:8888/health`; opencode talks to HexStrike via stdio (`hexstrike_mcp.py`) which bridges to `:8888` — the service must be up |
-| Hugging Face download stalls                   | `export HF_HUB_ENABLE_HF_TRANSFER=1` (installer already tries) or re-run step 2 — it resumes   |
+| `GLIBC_2.38 not found` from prebuilt binary    | Current llama.cpp prebuilts may target Ubuntu 24.04; step 1 detects this and falls back to source |
+| nvcc fails with `cannot execute cc1plus`       | gcc/g++ version skew: `sudo apt install g++-$(gcc -dumpversion)` — step 1 does this automatically |
+| **Model 404** at `/v1/chat/completions`        | The API alias is `pharaoh-agent`; keep `--alias pharaoh-agent` in the systemd unit            |
+| **MCP not connecting** in opencode             | Check `systemctl status hexstrike`, then `curl localhost:8888/health`; opencode uses the stdio bridge |
+| Hugging Face download stalls                   | Re-run step 2 — the Hugging Face CLI resumes partial downloads                                |
 | `opencode` not found                           | Ensure npm global bin is on PATH: `npm config get prefix` → add `<prefix>/bin` to `~/.bashrc`  |
-| Chat API returns **empty `content`**            | The model is a reasoning model — output first goes to `reasoning_content`. Give it enough `max_tokens` (e.g. ≥512) or it spends the whole budget thinking |
-| apt hangs on **wireshark-common** during step 6 | Already handled: the installer pre-seeds the debconf answer (`install-setuid=false`) |
-| radare2 build fails with `ccache gcc cannot create executables` | Handled: step 6 builds radare2 with `CCACHE_DISABLE=1` |
+| Chat API returns **empty `content`**           | Reasoning consumes tokens first. Give it enough `max_tokens` (≥512 for smoke tests; much more for real tasks) |
+| apt hangs on **wireshark-common** during step 6 | Already handled: the installer pre-seeds the debconf answer (`install-setuid=false`)          |
+| radare2 build fails with `ccache gcc cannot create executables` | Handled: step 6 builds radare2 with `CCACHE_DISABLE=1`                              |
 
 ## Repo layout
 
@@ -134,7 +151,7 @@ tool calling), and pins the exact MCP tool names in its prompts.
 │   ├── llama-cyberstrike.service
 │   └── hexstrike.service
 └── scripts/
-    ├── common.sh               # logging + helpers
+    ├── common.sh               # model identity + logging + shared helpers
     ├── 01-install-llamacpp.sh
     ├── 02-download-model.sh
     ├── 03-setup-services.sh
@@ -146,6 +163,6 @@ tool calling), and pins the exact MCP tool names in its prompts.
 
 ## Legal note
 
-The HexStrike tooling and the CyberStrike model are for **authorized security testing
+The HexStrike tooling and the Qwen3.8 abliterated model are for **authorized security testing
 only** (your own systems, labs, or written-permission engagements). `scanme.nmap.org`
 is explicitly provided by the Nmap project for scan testing.

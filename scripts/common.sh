@@ -18,7 +18,11 @@ OPENCODE_CONFIG_DIR="$STACK_HOME/.config/opencode"
 LLAMA_PORT=8000
 HEXSTRIKE_PORT=8888
 
-HF_REPO="huihui-ai/Huihui-CyberStrike-OffSec-35B-abliterated-GGUF"
+HF_REPO="huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF"
+MODEL_FILENAME="Huihui-Qwen3.8-27B-abliterated-Q8_0.gguf"
+MODEL_PATH="$MODELS_DIR/$MODEL_FILENAME"
+MODEL_ALIAS="pharaoh-agent"
+MODEL_NAME="Qwen3.8-27B Abliterated"
 HEXSTRIKE_REPO="https://github.com/netcuter/Hexstrike-AI.git"
 
 # --- logging ----------------------------------------------------------------

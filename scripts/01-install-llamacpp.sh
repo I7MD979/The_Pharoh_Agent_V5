@@ -5,16 +5,32 @@
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
-# --- fast path: already installed ------------------------------------------
+# --- fast path: already installed with Qwen3.8 reasoning controls ------------
+supports_qwen38() {
+  local help
+  help="$("$1" --help 2>&1)" || return 1
+  grep -q -- '--reasoning-effort' <<<"$help" && \
+    grep -q -- '--reasoning-preserve' <<<"$help"
+}
+
 if command -v llama-server >/dev/null 2>&1 && llama-server --version >/dev/null 2>&1; then
-  log_ok "llama-server already installed: $(llama-server --version | head -1)"
-  exit 0
+  if supports_qwen38 "$(command -v llama-server)"; then
+    log_ok "llama-server already installed: $(llama-server --version | head -1)"
+    exit 0
+  fi
+  log_warn "Existing llama-server lacks the reasoning controls required by Qwen3.8 — upgrading."
 fi
 if [ -x "$LLAMA_DIR/bin/llama-server" ]; then
-  log_ok "llama-server already present at $LLAMA_DIR/bin"
-  sudo ln -sf "$LLAMA_DIR"/bin/llama-* /usr/local/bin/ 2>/dev/null || true
-  exit 0
+  if supports_qwen38 "$LLAMA_DIR/bin/llama-server"; then
+    log_ok "llama-server already present at $LLAMA_DIR/bin"
+    sudo ln -sf "$LLAMA_DIR"/bin/llama-* /usr/local/bin/ 2>/dev/null || true
+    exit 0
+  fi
+  log_warn "Managed llama.cpp installation is too old for Qwen3.8 — upgrading."
 fi
+
+# Avoid selecting stale binaries from an older managed installation.
+rm -rf "$LLAMA_DIR"
 
 sudo apt-get update
 apt_install curl unzip jq ca-certificates

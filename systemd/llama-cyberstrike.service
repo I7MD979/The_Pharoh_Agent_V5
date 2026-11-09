@@ -1,5 +1,5 @@
 [Unit]
-Description=llama.cpp server — Huihui-CyberStrike-OffSec-35B (Q4_K_M) on :8000
+Description=llama.cpp server — Qwen3.8-27B Abliterated (Q8_0) on :8000
 After=network.target
 Wants=network.target
 
@@ -11,10 +11,12 @@ WorkingDirectory=__STACK_HOME__
 Environment=LD_LIBRARY_PATH=__LLAMA_LIBDIR__
 ExecStart=/usr/local/bin/llama-server \
   -m __MODEL_FILE__ \
-  --alias cyberstrike \
+  --alias __MODEL_ALIAS__ \
   --host 0.0.0.0 --port 8000 \
   -c 131072 -ngl 999 \
-  --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --jinja
+  --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --jinja \
+  --reasoning on --reasoning-effort xhigh --reasoning-preserve \
+  --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0
 Restart=on-failure
 RestartSec=10
 # Allow large model + KV cache

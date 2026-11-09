@@ -3,12 +3,12 @@
   "provider": {
     "local": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "CyberStrike",
+      "name": "Pharaoh Local Qwen",
       "options": { "baseURL": "http://localhost:8000/v1", "apiKey": "none" },
-      "models": { "cyberstrike": { "name": "CyberStrike-35B", "limit": { "context": 131072, "output": 8192 } } }
+      "models": { "__MODEL_ALIAS__": { "name": "Qwen3.8-27B Abliterated", "limit": { "context": 131072, "output": 32768 } } }
     }
   },
-  "model": "local/cyberstrike",
+  "model": "local/__MODEL_ALIAS__",
   "mcp": {
     "hexstrike": {
       "type": "local",
