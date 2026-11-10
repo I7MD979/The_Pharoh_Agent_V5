@@ -1,0 +1,13 @@
+[Unit]
+Description=Check llama.cpp inference and recover a stalled model
+After=llama-cyberstrike.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/pharaoh/llama_watchdog.py
+Environment=STARTUP_GRACE_SECONDS=900
+Environment=STALL_SECONDS=1800
+Environment=PROBE_TIMEOUT_SECONDS=120
+StateDirectory=pharaoh-watchdog
+LogsDirectory=pharaoh-watchdog
+TimeoutStartSec=240

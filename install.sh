@@ -10,6 +10,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/common.sh
 source "$SCRIPT_DIR/scripts/common.sh"
 
+if [ "${1:-}" = --check ]; then
+  require_ubuntu_2204
+  nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+  log_ok "Platform and GPU driver checks passed. No packages installed."
+  exit 0
+fi
+if [ "$#" -ne 0 ]; then
+  log_error "Usage: ./install.sh [--check]"
+  exit 2
+fi
 require_ubuntu_2204
 
 log_banner "The Pharaoh Agent V5 — local AI pentesting stack installer"
@@ -17,10 +27,12 @@ log_info "Repo root : $SCRIPT_DIR"
 log_info "User/Home : $STACK_USER / $STACK_HOME"
 log_info "GPU check : $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || echo 'nvidia-smi NOT FOUND — CUDA required!')"
 
-if ! command -v nvidia-smi >/dev/null 2>&1; then
+if ! nvidia-smi --query-gpu=name --format=csv,noheader >/dev/null 2>&1; then
   log_error "nvidia-smi not found. Install NVIDIA drivers + CUDA before continuing."
   exit 1
 fi
+
+bootstrap
 
 run_step() {
   local n="$1"; shift

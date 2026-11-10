@@ -8,9 +8,10 @@ Requires=hexstrike.service
 [Service]
 Type=simple
 User=__STACK_USER__
-Group=__STACK_USER__
+Group=__STACK_GROUP__
 WorkingDirectory=__HEXSTRIKE_DIR__
-ExecStart=__HEXSTRIKE_DIR__/venv/bin/python3 __HEXSTRIKE_DIR__/hexstrike_mcp.py --server http://localhost:8888
+Environment="PATH=/usr/local/bin:/usr/bin:/bin:/snap/bin"
+ExecStart=__HEXSTRIKE_DIR__/venv/bin/python3 __HEXSTRIKE_DIR__/pharaoh_bridge.py --server http://127.0.0.1:8888
 # Long-lived MCP daemon: if it ever wedges, bounce it immediately. opencode
 # reconnects by itself on the next tool call (every call is a fresh HTTP request,
 # so there is no shared pipe state to corrupt across sessions).

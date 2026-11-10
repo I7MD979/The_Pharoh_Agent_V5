@@ -5,6 +5,9 @@
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
+require_ubuntu_2204
+bootstrap
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # --- clone / update -----------------------------------------------------------
@@ -23,11 +26,20 @@ if [ ! -x "$HEXSTRIKE_DIR/venv/bin/python3" ]; then
 fi
 "$HEXSTRIKE_DIR/venv/bin/pip" install --upgrade pip
 if [ -f "$HEXSTRIKE_DIR/requirements.txt" ]; then
-  retry 3 "$HEXSTRIKE_DIR/venv/bin/pip" install -r "$HEXSTRIKE_DIR/requirements.txt"
+  # The code imports the official mcp.server.fastmcp, not the third-party
+  # fastmcp package. Declare a version with Streamable HTTP explicitly.
+  FILTERED="$(mktemp)"
+  trap 'rm -f "$FILTERED"' EXIT
+  sed '/^[[:space:]]*fastmcp[<=>~![:space:]]/Id' "$HEXSTRIKE_DIR/requirements.txt" > "$FILTERED"
+  retry 3 "$HEXSTRIKE_DIR/venv/bin/python" -m pip install -r "$FILTERED" 'mcp>=1.12,<2'
+  rm -f "$FILTERED"
+  trap - EXIT
 else
   log_warn "requirements.txt not found — installing minimal deps (flask, requests, mcp)."
-  "$HEXSTRIKE_DIR/venv/bin/pip" install flask requests mcp
+  "$HEXSTRIKE_DIR/venv/bin/pip" install flask requests 'mcp>=1.12,<2'
 fi
+"$HEXSTRIKE_DIR/venv/bin/python" -m pip check
+"$HEXSTRIKE_DIR/venv/bin/python" -c 'from mcp.server.fastmcp import FastMCP; FastMCP("check", stateless_http=True, json_response=True)'
 
 # --- security tools ------------------------------------------------------------
 # Apt-available tools (per HexStrike README). Missing ones are warnings, not
@@ -38,7 +50,7 @@ APT_TOOLS=(nmap sqlmap gobuster hydra john nikto dirb wpscan enum4linux
 TO_INSTALL=()
 for t in "${APT_TOOLS[@]}"; do
   pkg="$t"
-  [ "$t" = "httpx-toolkit" ] && { command -v httpx >/dev/null 2>&1 && continue; }
+  [ "$t" = "httpx-toolkit" ] && { httpx -version >/dev/null 2>&1 && continue; }
   command -v "${t%%-*}" >/dev/null 2>&1 || TO_INSTALL+=("$pkg")
 done
 if [ "${#TO_INSTALL[@]}" -gt 0 ]; then
@@ -62,16 +74,9 @@ fi
 
 # nuclei via Go (README-preferred), fallback to apt/pipx-less download.
 if ! command -v nuclei >/dev/null 2>&1; then
-  if ! command -v go >/dev/null 2>&1; then
-    log_info "Installing Go (for nuclei)…"
-    snap_install_ok=false
-    if command -v snap >/dev/null 2>&1 && sudo snap install go --classic 2>/dev/null; then
-      snap_install_ok=true
-    fi
-    $snap_install_ok || apt_install golang-go
-  fi
+  ensure_go
   log_info "Installing nuclei via go install…"
-  GOBIN=/usr/local/bin sudo -E "$(command -v go)" install \
+  sudo env GOBIN=/usr/local/bin "$(command -v go)" install \
     github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest 2>/dev/null || {
       log_warn "go install nuclei failed — downloading release binary."
       arch="$(dpkg --print-architecture)"; [ "$arch" = "amd64" ] || arch="arm64"
@@ -83,41 +88,8 @@ if ! command -v nuclei >/dev/null 2>&1; then
   nuclei -update-templates >/dev/null 2>&1 || true
 fi
 
-# --- patch MCP bridge timeouts --------------------------------------------------
-# The MCP bridge (hexstrike_mcp.py) hard-codes a 300 s HTTP timeout per request
-# to the HexStrike server. Real scans (nuclei, full vulnerability assessments)
-# routinely exceed that → "Timed out, retry." Raise it to 30 minutes. Idempotent:
-# only touches the stock default.
-if grep -q '^DEFAULT_REQUEST_TIMEOUT = 300' "$HEXSTRIKE_DIR/hexstrike_mcp.py"; then
-  sed -i 's/^DEFAULT_REQUEST_TIMEOUT = 300/DEFAULT_REQUEST_TIMEOUT = 1800/' \
-    "$HEXSTRIKE_DIR/hexstrike_mcp.py"
-  log_ok "Patched hexstrike_mcp.py: request timeout 300s → 1800s"
-else
-  log_info "hexstrike_mcp.py timeout already patched (or upstream changed) — skipping."
-fi
-
-# --- convert MCP bridge from stdio to streamable-http ----------------------------
-# Stock hexstrike_mcp.py runs `mcp.run()` with no transport => stdio. opencode
-# then owns a long-lived child process over one shared pipe; a single interrupt
-# mid-tool corrupts the pipe state and every later request hangs forever.
-# Patch it to serve streamable-http on the bridge port instead, as a systemd
-# daemon (see hexstrike-bridge.service). Idempotent + keeps a .bak backup.
-if ! grep -q 'transport="streamable-http"' "$HEXSTRIKE_DIR/hexstrike_mcp.py"; then
-  [ -f "$HEXSTRIKE_DIR/hexstrike_mcp.py.bak" ] || \
-    cp "$HEXSTRIKE_DIR/hexstrike_mcp.py" "$HEXSTRIKE_DIR/hexstrike_mcp.py.bak"
-  sed -i "s|FastMCP(\"hexstrike-ai-mcp\")|FastMCP(\"hexstrike-ai-mcp\", host=\"127.0.0.1\", port=$HEXSTRIKE_MCP_BRIDGE_PORT)|" \
-    "$HEXSTRIKE_DIR/hexstrike_mcp.py"
-  sed -i 's|mcp\.run()|mcp.run(transport="streamable-http")|' \
-    "$HEXSTRIKE_DIR/hexstrike_mcp.py"
-  if grep -q 'transport="streamable-http"' "$HEXSTRIKE_DIR/hexstrike_mcp.py"; then
-    log_ok "Patched hexstrike_mcp.py: stdio → streamable-http on :$HEXSTRIKE_MCP_BRIDGE_PORT (backup: hexstrike_mcp.py.bak)"
-  else
-    log_error "streamable-http patch failed — upstream hexstrike_mcp.py layout changed. Inspect $HEXSTRIKE_DIR/hexstrike_mcp.py manually."
-    exit 1
-  fi
-else
-  log_info "hexstrike_mcp.py already runs streamable-http — skipping patch."
-fi
+# Use a separate launcher; leave upstream source intact for git pull.
+install -m 0644 "$REPO_ROOT/scripts/hexstrike_bridge.py" "$HEXSTRIKE_DIR/pharaoh_bridge.py"
 
 # --- systemd service ------------------------------------------------------------
 [ -f "$HEXSTRIKE_DIR/hexstrike_server.py" ] || {
@@ -125,6 +97,7 @@ fi
 
 log_info "Generating hexstrike systemd unit…"
 sed -e "s|__STACK_USER__|$STACK_USER|g" \
+    -e "s|__STACK_GROUP__|$STACK_GROUP|g" \
     -e "s|__HEXSTRIKE_DIR__|$HEXSTRIKE_DIR|g" \
     "$REPO_ROOT/systemd/hexstrike.service" \
   | sudo tee /etc/systemd/system/hexstrike.service >/dev/null
@@ -135,17 +108,17 @@ sudo systemctl restart hexstrike
 
 # --- verify ---------------------------------------------------------------------
 log_info "Waiting for HexStrike on :$HEXSTRIKE_PORT…"
-for i in $(seq 1 24); do
-  curl -fsS "http://localhost:$HEXSTRIKE_PORT/health" >/dev/null 2>&1 && break
+for _ in $(seq 1 24); do
+  curl -fsS --max-time 10 "http://localhost:$HEXSTRIKE_PORT/health" >/dev/null 2>&1 && break
   systemctl is-active --quiet hexstrike || {
     log_error "hexstrike service died. Recent logs:"
     sudo journalctl -u hexstrike -n 40 --no-pager; exit 1; }
   sleep 5
 done
 
-TOOLS_JSON="$(curl -fsS "http://localhost:$HEXSTRIKE_PORT/api/tools" 2>/dev/null || \
-              curl -fsS "http://localhost:$HEXSTRIKE_PORT/health")"
-echo "$TOOLS_JSON" | head -c 2000; echo
+TOOLS_JSON="$(curl -fsS --max-time 10 "http://localhost:$HEXSTRIKE_PORT/api/tools" 2>/dev/null || \
+              curl -fsS --max-time 10 "http://localhost:$HEXSTRIKE_PORT/health")"
+printf '%.2000s\n' "$TOOLS_JSON"
 for t in nmap nuclei sqlmap; do
   echo "$TOOLS_JSON" | grep -qi "$t" && log_ok "tool exposed: $t" \
     || log_warn "'$t' not visible in tool listing (may still be available via MCP bridge)."
@@ -157,6 +130,7 @@ log_ok "HexStrike AI server is running on http://0.0.0.0:$HEXSTRIKE_PORT"
 # opencode connects to this URL as `type: remote` — no more stdio child process.
 log_info "Generating hexstrike-bridge systemd unit…"
 sed -e "s|__STACK_USER__|$STACK_USER|g" \
+    -e "s|__STACK_GROUP__|$STACK_GROUP|g" \
     -e "s|__HEXSTRIKE_DIR__|$HEXSTRIKE_DIR|g" \
     "$REPO_ROOT/systemd/hexstrike-bridge.service" \
   | sudo tee /etc/systemd/system/hexstrike-bridge.service >/dev/null
@@ -166,7 +140,7 @@ sudo systemctl enable hexstrike-bridge
 sudo systemctl restart hexstrike-bridge
 
 log_info "Waiting for the MCP bridge on :$HEXSTRIKE_MCP_BRIDGE_PORT…"
-for i in $(seq 1 12); do
+for _ in $(seq 1 12); do
   systemctl is-active --quiet hexstrike-bridge || {
     log_error "hexstrike-bridge service died. Recent logs:"
     sudo journalctl -u hexstrike-bridge -n 40 --no-pager; exit 1; }

@@ -6,9 +6,10 @@ Wants=network.target
 [Service]
 Type=simple
 User=__STACK_USER__
-Group=__STACK_USER__
+Group=__STACK_GROUP__
 WorkingDirectory=__HEXSTRIKE_DIR__
 Environment=HEXSTRIKE_PORT=8888
+Environment="PATH=/usr/local/bin:/usr/bin:/bin:/snap/bin"
 ExecStart=__HEXSTRIKE_DIR__/venv/bin/python3 __HEXSTRIKE_DIR__/hexstrike_server.py --port 8888
 Restart=on-failure
 RestartSec=10

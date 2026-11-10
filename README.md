@@ -1,191 +1,297 @@
-# The Pharaoh Agent V5 — Local AI Pentesting Stack
+# The Pharaoh Agent V5
 
-A fully local, self-hosted AI pentesting stack for **Ubuntu 22.04** with an NVIDIA GPU
-(tested target: **96 GB RAM / 48 GB VRAM, CUDA working**).
+### Local AI infrastructure for authorized security testing
+
+[![Validate installer](https://github.com/I7MD979/The_Pharoh_Agent_V5/actions/workflows/validate.yml/badge.svg)](https://github.com/I7MD979/The_Pharoh_Agent_V5/actions/workflows/validate.yml)
+![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%7C%2024.04-E95420?logo=ubuntu&logoColor=white)
+![CUDA](https://img.shields.io/badge/NVIDIA-CUDA-76B900?logo=nvidia&logoColor=white)
+![Inference](https://img.shields.io/badge/Inference-Local-blue)
+
+Run a local language model, an agent CLI, and a security tools API as one managed stack. Pharaoh connects **OpenCode**, **llama.cpp**, and **HexStrike AI** through a dedicated **Model Context Protocol (MCP)** bridge, with systemd services and automatic detection of stalled inference.
+
+Inference runs on your own GPU. Installation downloads model weights and dependencies; individual tools may access external services depending on your requests.
+
+[Quick start](#quick-start) · [Architecture](#architecture) · [Requirements](#requirements) · [Operations](#operations) · [Automatic recovery](#automatic-recovery) · [Troubleshooting](#troubleshooting)
+
+## Highlights
+
+- **Local model:** Qwen3.8-27B Abliterated Q8_0 through an OpenAI-compatible API.
+- **Agent integration:** OpenCode uses the local provider and remote HexStrike MCP tools.
+- **Stateless MCP:** an independent HTTP bridge uses the official Python SDK without modifying upstream HexStrike source.
+- **Service management:** systemd handles startup, process failures, and service ordering.
+- **Inference monitoring:** readiness checks, token progress tracking, and bounded inference probes detect an alive but unresponsive model.
+- **Recoverable installation:** staged llama.cpp upgrades retain the previous installation; tool failures produce logs and an unsuccessful exit status.
+- **Isolated Python dependencies:** Hugging Face and tool CLIs use virtual environments.
 
 ## Architecture
 
-```
-┌─────────────┐   OpenAI API    ┌──────────────────────────────┐
-│  opencode   │ ──────────────► │ llama.cpp  (llama-server)     │
-│  (agent CLI)│  localhost:8000 │ Qwen3.8-27B-abliterated       │
-│             │                 │ (GGUF Q8_0, xhigh reasoning)  │
-│             │                 └──────────────────────────────┘
-│             │  MCP (remote,
-│             │  stateless HTTP)
-│             │ ──────────────► ┌──────────────────────────────┐
-└─────────────┘                 │ hexstrike-bridge (systemd)    │
-            127.0.0.1:8890/mcp  │ streamable-http MCP daemon    │
-                                └──────────────┬───────────────┘
-                                               │ HTTP
-                                       ┌───────▼──────────────────┐
-                                       │ HexStrike AI (tools API)  │
-                                       │ hexstrike_server.py :8888 │
-                                       │ nmap · nuclei · sqlmap …  │
-                                       └───────────────────────────┘
+```mermaid
+flowchart LR
+    U[Operator] --> O[OpenCode CLI]
+    O -->|OpenAI API :8000| L[llama.cpp / Qwen3.8-27B]
+    O -->|Stateless HTTP :8890/mcp| B[HexStrike MCP bridge]
+    B -->|HTTP API :8888| H[HexStrike AI]
+    H --> T[Installed security tools]
+    W[Watchdog timer] -->|Readiness / progress / inference| L
+    W -->|Recover stalled service| S[systemd]
+    S --> L
 ```
 
-| Component           | What it is                                                        | Port / transport          |
-| ------------------- | ----------------------------------------------------------------- | ------------------------- |
-| llama.cpp           | Serves the Qwen3.8-27B Abliterated Q8_0 GGUF, OpenAI-compatible  | `0.0.0.0:8000` (HTTP)     |
-| HexStrike AI        | Security-tools API server (nmap, nuclei, sqlmap, gobuster, …)     | `0.0.0.0:8888` (HTTP API) |
-| hexstrike-bridge    | Long-lived MCP daemon (`hexstrike_mcp.py`, streamable-http)       | `127.0.0.1:8890` (MCP)    |
-| opencode            | Terminal AI agent wired to the local model + HexStrike MCP tools  | MCP over HTTP (`remote`)  |
+| Component | Purpose | Endpoint / service |
+| --- | --- | --- |
+| llama.cpp | GPU inference and OpenAI-compatible API | `:8000` · `llama-cyberstrike.service` |
+| HexStrike AI | Executes installed security tools | `:8888` · `hexstrike.service` |
+| MCP bridge | Exposes tools to the agent | `127.0.0.1:8890/mcp` · `hexstrike-bridge.service` |
+| OpenCode | Interactive and scripted agent interface | `opencode` |
+| Watchdog | Checks inference and recovers stalls | `llama-watchdog.timer` / `.service` |
 
-**Why a bridge daemon instead of stdio?** With the stock setup, opencode spawned
-`hexstrike_mcp.py` as a stdio child over one shared pipe. A single interrupt mid-tool
-poisoned that pipe's state, and every later tool call hung forever (the "spinner for
-20 minutes" failure). The bridge daemon serves one stateless HTTP request per tool
-call, survives agent restarts, auto-recovers via systemd (`Restart=always`), and is
-health-checkable with plain `curl`.
+The historical `llama-cyberstrike` service name is retained for compatibility. The model API alias is **`pharaoh-agent`**.
 
-The selected model is built for **agentic planning and execution**, native tool calling,
-and long multi-step tasks. Thinking is explicitly enabled at **xhigh** depth, and reasoning
-is preserved across turns to improve decision consistency. The abliterated checkpoint is
-provided by `huihui-ai`; no hosted model API is required.
+The bridge runs independently of the agent. Fresh MCP connections do not rely on a previous session's pipe or session ID. A transport change cannot repair stalled GPU inference; the watchdog monitors the model separately.
 
-## Quick start (fresh Ubuntu 22.04 server)
+## Requirements
+
+| Requirement | Details |
+| --- | --- |
+| OS | Ubuntu **22.04 or 24.04**, x86_64, with systemd running |
+| Reference hardware | **96 GB RAM / 48 GB NVIDIA VRAM**; actual needs vary with context and configuration |
+| NVIDIA driver | `nvidia-smi` must detect a working GPU before installation |
+| CUDA toolkit | Needed for source builds; the installer can install NVIDIA's `cuda-toolkit-12-8` |
+| Storage | Approximately 29 GB for model weights, plus substantial space for tools, caches, builds, and upgrade backups |
+| Permissions | A user with sudo access, or a root account on a root-only server |
+| Network | Access to Ubuntu repositories, GitHub, Hugging Face, package registries, and NVIDIA's repository when needed |
+
+Ubuntu 22.04 is the original reference target. The installer also accepts Ubuntu 24.04; preflight acceptance does not establish compatibility of every third-party tool. Native Windows and Git Bash are unsupported targets. WSL requires an Ubuntu distribution with systemd and working GPU access.
+
+The default model configuration uses **131,072 context tokens**, **q8_0 KV cache**, flash attention, and full GPU offload. Reduce context or offload when memory is insufficient.
+
+## Quick start
+
+Run on the target Ubuntu machine as the account that will own the installation:
 
 ```bash
 git clone https://github.com/I7MD979/The_Pharoh_Agent_V5.git
 cd The_Pharoh_Agent_V5
 chmod +x install.sh start-stack.sh stop-stack.sh scripts/*.sh
-./install.sh            # full setup: llama.cpp → model → services → HexStrike → opencode → tools → verify
+
+./install.sh --check   # platform, systemd, and GPU driver checks; installs nothing
+./install.sh           # install the complete stack and verify it
 ```
 
-The installer is idempotent — re-running it skips finished steps. It auto-detects
-your login user/home and generates the systemd units from `systemd/*.service` templates.
+Allow time for the model download and possible CUDA/tool builds. Use a persistent terminal session such as `tmux` for remote installation. Preflight does not validate available memory or every dependency.
 
-### What the installer does (per step)
+Prefer `./install.sh` without a leading `sudo`; privileged operations request it as needed. When invoked through sudo, the scripts switch back to the login user so models and configuration go into that user's home.
 
-1. `scripts/01-install-llamacpp.sh` — downloads the latest prebuilt CUDA release of
-   llama.cpp from `ggml-org/llama.cpp`; falls back to building from source with
-   `cmake -DGGML_CUDA=ON`. Older managed installs without the required reasoning controls
-   are upgraded. Verifies `llama-server --version`.
-2. `scripts/02-download-model.sh` — installs `huggingface-hub`, then downloads only
-   `Huihui-Qwen3.8-27B-abliterated-Q8_0.gguf` (~29 GB) from
-   `huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF` into `~/models`.
-   The stack runs text-only and does not download the optional vision projector.
-3. `scripts/03-setup-services.sh` — installs + enables the `llama-cyberstrike` systemd
-   service and verifies `curl localhost:8000/v1/models` and a `"say OK"` chat completion.
-4. `scripts/04-install-hexstrike.sh` — clones `netcuter/Hexstrike-AI` into `~/Hexstrike-AI`,
-   creates its venv, installs Python requirements and the security tools
-   (nmap, nuclei, sqlmap, gobuster, …), patches the MCP bridge request timeout
-   (300 s → 1800 s), patches `hexstrike_mcp.py` from stdio to **streamable-http on :8890**
-   (backup kept as `hexstrike_mcp.py.bak`), then installs + enables both the `hexstrike`
-   service (:8888) and the `hexstrike-bridge` MCP daemon (:8890).
-5. `scripts/05-install-opencode.sh` — installs Node.js + `opencode-ai`, writes
-   `~/.config/opencode/opencode.json` (local provider on port 8000 + HexStrike MCP as a
-   **remote** connection to the bridge on `127.0.0.1:8890/mcp`,
-   with a 1-hour MCP request timeout for long scans).
-6. `scripts/06-install-all-tools.sh` — installs the **full** HexStrike toolset (~120 tools):
-   apt packages, Go tools, pip CLIs, Ruby gems, GitHub release binaries (feroxbuster,
-   rustscan, trivy, terrascan, kube-bench, ghidra, …), Metasploit via the Rapid7 installer,
-   radare2 from source, OWASP ZAP, and git-based tools (Responder, commix, spiderfoot, …).
-   Fault-tolerant: individual failures are summarized at the end, never abort the run.
-7. `scripts/07-verify.sh` — end-to-end checks (see below).
+### Installation stages
 
-## Managing the stack
+| Step | Script | Result |
+| --- | --- | --- |
+| 1 | `01-install-llamacpp.sh` | Tries a CUDA release, falls back to source, validates reasoning controls and CUDA device detection before replacing the managed installation |
+| 2 | `02-download-model.sh` | Downloads the GGUF and validates its header and exact expected remote file size |
+| 3 | `03-setup-services.sh` | Installs the model service and watchdog, waits for readiness, and tests chat inference |
+| 4 | `04-install-hexstrike.sh` | Installs HexStrike dependencies, core tools, the API service, and stateless MCP launcher |
+| 5 | `05-install-opencode.sh` | Ensures Node.js 22+, installs OpenCode, backs up existing configuration, and writes the local provider/MCP configuration |
+| 6 | `06-install-all-tools.sh` | Attempts the extended apt, Go, Python, Ruby, release-binary, and source-built toolset |
+| 7 | `07-verify.sh` | Checks real API responses, installed core tools, MCP registration/execution, the watchdog timer, and an OpenCode request |
+
+All numbered scripts live in `scripts/`. Rerunning reuses validated components where possible, but may update packages/checkouts, regenerate configuration, rebuild tools, and restart services. It is not a no-op.
+
+Replaced llama.cpp installations are retained as `~/llama.cpp.backup.<timestamp>.<pid>`. Existing OpenCode configuration is backed up before regeneration. If a stage fails, fix its reported error and rerun that script or the master installer.
+
+The extended tool stage collects failures and **exits unsuccessfully if any were recorded**. The master installer does not report a complete installation in that case.
+
+### Model defaults
+
+| Setting | Value |
+| --- | --- |
+| Repository | [`huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF`](https://huggingface.co/huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF) |
+| File | `Huihui-Qwen3.8-27B-abliterated-Q8_0.gguf` |
+| API alias / OpenCode model | `pharaoh-agent` / `local/pharaoh-agent` |
+| Reasoning | Enabled, `xhigh`, preserved across turns |
+| Sampling | Temperature `1.0`, top-p `0.95`, top-k `20`, min-p `0` |
+| OpenCode output limit | `32,768` tokens |
+
+The optional vision projector is not downloaded. Installation smoke tests disable thinking only for their small test requests; normal agent requests retain the configured reasoning defaults.
+
+## Usage
 
 ```bash
-./start-stack.sh        # systemctl start llama-cyberstrike + hexstrike + hexstrike-bridge
-./stop-stack.sh         # stop all three
-sudo systemctl status llama-cyberstrike hexstrike hexstrike-bridge
-journalctl -u llama-cyberstrike -f      # model server logs
-journalctl -u hexstrike -f              # tools server logs
-journalctl -u hexstrike-bridge -f       # MCP bridge logs (CallToolRequest per tool call)
+opencode
+opencode run "List the tools available from the HexStrike MCP server."
+opencode run "Explain the results of my authorized assessment."
+
+curl -fsS --max-time 10 http://127.0.0.1:8000/v1/models
+curl -fsS --max-time 10 http://127.0.0.1:8888/health
+
+bash scripts/07-verify.sh
 ```
 
-All services auto-start on boot and restart on failure (`Restart=always` on the bridge). The historical service name
-`llama-cyberstrike` is retained for compatibility; it now serves Qwen3.8.
+Verification checks registered MCP tool names and actual `tools_status` values, then calls `nmap_scan` through MCP against **127.0.0.1:8000**. It does not infer success from an agent mentioning tool names or open ports, and it does not scan external hosts by default.
 
-## Using the agent
+## Operations
 
 ```bash
-opencode                                  # interactive TUI (model: Qwen3.8-27B local)
-opencode run "list your available MCP tools"
-opencode run "run a quick nmap -sV scan against scanme.nmap.org and summarize open ports"
+./start-stack.sh
+./stop-stack.sh
+
+systemctl status llama-cyberstrike hexstrike hexstrike-bridge --no-pager
+systemctl status llama-watchdog.timer --no-pager
+systemctl list-timers llama-watchdog.timer
 ```
 
-The API model alias is `pharaoh-agent`. Reasoning defaults to `xhigh`; generation uses the
-model author's recommended thinking-mode sampling (`temp=1.0`, `top_p=0.95`, `top_k=20`,
-`min_p=0`). OpenCode allows up to 32,768 output tokens for reasoning plus the final response.
+Start/stop helpers include the watchdog. Its checks leave a manually stopped model service alone.
 
-## Verification checklist (run `./scripts/07-verify.sh`)
+### Logs and diagnostics
 
-1. `curl localhost:8000/v1/models` returns the `pharaoh-agent` model id.
-2. Chat completion `"say OK"` returns non-empty text with enough tokens for reasoning.
-3. HexStrike tool list includes `nmap`, `nuclei`, `sqlmap`.
-4. `opencode run "list your available MCP tools"` shows HexStrike tools.
-5. Real test: nmap scan of `scanme.nmap.org` executed through the MCP tool.
+```bash
+journalctl -u llama-cyberstrike -f
+journalctl -u hexstrike -f
+journalctl -u hexstrike-bridge -f
+journalctl -u llama-watchdog.service -n 80 --no-pager
 
-The verifier waits for service readiness (llama.cpp can take minutes to load the model),
-retries the two agent-based checks up to 3 times, and pins the exact MCP tool names in its prompts.
+nvidia-smi
+curl -fsS --max-time 10 http://127.0.0.1:8000/slots
+```
 
-## Swapping the model later
+| Location | Contents |
+| --- | --- |
+| `~/pharaoh-tools-install.log` | Detailed extended tool installation output |
+| `~/pharaoh-tool-failures.txt` | Collected tool failures; removed after a failure-free run |
+| `/var/log/pharaoh-watchdog/latest-diagnostic.log` | Latest pre-recovery model logs, GPU status, and memory summary |
+| `/var/lib/pharaoh-watchdog/state.json` | Watchdog progress/failure state |
 
-1. Download a new GGUF into `~/models`.
-2. Edit `ExecStart` in `/etc/systemd/system/llama-cyberstrike.service`
-   (point `-m` at the new file; tune `-c`/`-ngl` and sampling as needed).
-3. `sudo systemctl daemon-reload && sudo systemctl restart llama-cyberstrike`.
-4. Keep `--alias pharaoh-agent` to avoid changing OpenCode, or update `config/opencode.json`
-   and rerun `scripts/05-install-opencode.sh` if you change the alias.
+### Network boundaries
 
-To change the default downloaded model in the installer, update `HF_REPO` and
-`MODEL_FILENAME` in `scripts/common.sh` together with the model metadata and limits in
-`config/opencode.json` and `systemd/llama-cyberstrike.service`.
+The MCP bridge binds to loopback. The supplied model and upstream HexStrike API configuration may listen on all interfaces; restrict access to trusted clients. Use an SSH tunnel or explicit access controls for remote clients. The generated local provider does not require a hosted model API key.
 
-> VRAM/RAM note: the configured context is **131,072 tokens** with **q8_0-quantized KV cache**
-> (`--cache-type-k q8_0 --cache-type-v q8_0`, flash attention on). Qwen3.8 natively supports
-> 262,144 tokens, but the larger context is not enabled by default on the 48 GB VRAM target.
-> Check actual model, KV, and compute-buffer usage with `nvidia-smi` before raising `-c`.
+## Automatic recovery
+
+**`active (running)` does not guarantee that inference is working.** The watchdog runs once a minute after the previous check finishes and uses three signals:
+
+1. **Readiness:** `/health` must respond with a ready status.
+2. **Busy-slot progress:** task identity and token counters are compared between checks. Advancing generation can continue for hours without a stall restart.
+3. **Idle inference:** approximately every five minutes while idle, a bounded one-token native completion checks that inference actually works.
+
+| Threshold | Default | Purpose |
+| --- | --- | --- |
+| Startup grace | 900 seconds | Allows model loading before checks begin |
+| Busy stall limit | 1,800 seconds | Recovers a busy model with no observable task/token progress |
+| Inference probe timeout | 120 seconds | Bounds the idle inference test |
+| Consecutive failures | 3 | Avoids recovery on a single failed check |
+
+Before recovery, diagnostics are saved and service state is checked again. A restart is requested only if the model remains active. Restarting interrupts in-flight requests. Long prompt processing with no exposed progress can also reach the stall limit; tune it for your workload.
+
+This is a recovery mechanism, **not a confirmed diagnosis** of a particular GPU, context, model, or agent issue. Driver faults requiring a GPU reset or reboot may survive a service restart. Investigate repeated recovery events using the saved diagnostics.
+
+To adjust thresholds:
+
+```bash
+sudo systemctl edit llama-watchdog.service
+```
+
+```ini
+[Service]
+Environment=STARTUP_GRACE_SECONDS=1200
+Environment=STALL_SECONDS=3600
+Environment=PROBE_TIMEOUT_SECONDS=180
+TimeoutStartSec=300
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart llama-watchdog.timer
+```
+
+## Configuration
+
+| Source | Role / installed location |
+| --- | --- |
+| `scripts/common.sh` | Model identity, paths, ports, and installation helpers |
+| `config/opencode.json` | Template for `~/.config/opencode/opencode.json` |
+| `systemd/llama-cyberstrike.service` | Model service template |
+| `systemd/hexstrike*.service` | API and MCP service templates |
+| `systemd/llama-watchdog.*` | Monitoring service and timer |
+| `scripts/hexstrike_bridge.py` | Copied to `~/Hexstrike-AI/pharaoh_bridge.py` |
+
+### Context size and GPU offload
+
+Edit the model service's `ExecStart` settings: for example, lower `-c 131072` to `-c 65536` or `-c 32768`. Keep the OpenCode model context limit in sync, and monitor actual allocation with `nvidia-smi`.
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart llama-cyberstrike
+```
+
+Installer reruns can replace generated units. Update repository templates for persistent installer defaults, or maintain systemd overrides. Replacing `ExecStart` in an override requires clearing the original with an empty `ExecStart=` first.
+
+### Replace the model
+
+Download a compatible GGUF, update the service's `-m` path, and review context, cache, sampling, and reasoning settings for that model. Retain `--alias pharaoh-agent` to preserve the provider configuration, then rerun verification.
+
+To change the installer's default checkpoint, update `HF_REPO` and `MODEL_FILENAME` in `scripts/common.sh`, the metadata in `config/opencode.json`, and generation settings in the systemd template.
 
 ## Troubleshooting
 
-| Symptom                                        | Fix                                                                                          |
-| ---------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| **GPU OOM** on service start                   | Lower context: `-c 65536` or `-c 32768`; use a Q6_K/Q4_K GGUF; or reduce offload with `-ngl` |
-| **System RAM exhausted** / builds OOM-killed   | Keep the default `-c 131072` + q8_0 KV cache; add a swapfile for headroom                    |
-| `unknown model architecture` / missing reasoning flags | Qwen3.8 needs a recent llama.cpp — rerun step 1 to upgrade the managed installation     |
-| MCP tool call fails instantly with **"Timed out, retry."** | `config/opencode.json` sets `"timeout": 3600000`; step 4 also patches the bridge HTTP timeout to 1800 s |
-| Step 7 verify fails with agent reading `logs/<timestamp>/…` | Cold start race — the verifier waits for `/v1/models` + `/health` and retries agent checks |
-| `llama-server` fails with missing `libcudart`  | Install CUDA runtime (`nvidia-cuda-toolkit`) or re-run step 1 (it fetches the cudart bundle)  |
-| `GLIBC_2.38 not found` from prebuilt binary    | Current llama.cpp prebuilts may target Ubuntu 24.04; step 1 detects this and falls back to source |
-| nvcc fails with `cannot execute cc1plus`       | gcc/g++ version skew: `sudo apt install g++-$(gcc -dumpversion)` — step 1 does this automatically |
-| **Model 404** at `/v1/chat/completions`        | The API alias is `pharaoh-agent`; keep `--alias pharaoh-agent` in the systemd unit            |
-| **MCP not connecting** in opencode             | Check `systemctl status hexstrike-bridge`, then the handshake: `curl -sS -X POST http://127.0.0.1:8890/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}' — must contain `hexstrike-ai-mcp` |
-| Agent hangs on a tool call with no bridge activity | That is model generation time (local LLM thinking), not the bridge. Confirm with `journalctl -u hexstrike-bridge -n 6` (look for a fresh `CallToolRequest`) and llama-server slots |
-| Bridge wedges mid-session                       | `sudo systemctl restart hexstrike-bridge` — opencode reconnects automatically on the next tool call (stateless HTTP, no poisoned-pipe state) |
-| Environment wire list check                     | Bridge is bound to `127.0.0.1` only — never expose :8890; if remote access is needed use an SSH tunnel |
-| Hugging Face download stalls                   | Re-run step 2 — the Hugging Face CLI resumes partial downloads                                |
-| `opencode` not found                           | Ensure npm global bin is on PATH: `npm config get prefix` → add `<prefix>/bin` to `~/.bashrc`  |
-| Chat API returns **empty `content`**           | Reasoning consumes tokens first. Give it enough `max_tokens` (≥512 for smoke tests; much more for real tasks) |
-| apt hangs on **wireshark-common** during step 6 | Already handled: the installer pre-seeds the debconf answer (`install-setuid=false`)          |
-| radare2 build fails with `ccache gcc cannot create executables` | Handled: step 6 builds radare2 with `CCACHE_DISABLE=1`                              |
+| Symptom | Action |
+| --- | --- |
+| Unsupported platform / systemd unavailable | Run on the target Ubuntu host. Enable systemd first when using WSL. |
+| `nvidia-smi` missing or failing | Fix the driver and GPU visibility before installation; a toolkit alone does not repair the driver. |
+| Prebuilt fails with `GLIBC_*` or CUDA runtime errors | Step 1 falls back to source and validates the replacement before promoting it. |
+| CMake cannot locate CUDA | Use a complete NVIDIA toolkit. Step 1 passes its compiler and matching `CUDAToolkit_ROOT`; a distro `nvcc` on PATH alone is insufficient. |
+| CUDA compilation exhausts RAM | Try `BUILD_JOBS=2 bash scripts/01-install-llamacpp.sh`. |
+| Compute capability cannot be detected | Supply the appropriate architecture, e.g. `CUDA_ARCHITECTURES=86 bash scripts/01-install-llamacpp.sh` for a suitable Ampere GPU. |
+| Incomplete/invalid model download | Step 2 validates remote size and the GGUF header, then downloads again if needed. |
+| GPU out of memory / service restart loop | Inspect the model journal and `nvidia-smi`; reduce context/offload or choose a smaller quantization. |
+| Service active but generation stops after hours | Inspect watchdog logs and `latest-diagnostic.log` to distinguish inference timeouts, lack of progress, and memory/driver failures. |
+| Extended tool stage fails | Review `~/pharaoh-tool-failures.txt` and `~/pharaoh-tools-install.log`, fix reported errors, and rerun step 6. |
+| MCP bridge does not start | Check `journalctl -u hexstrike-bridge`; rerun step 4 to install the SDK and launcher. |
+| OpenCode cannot reach MCP | Confirm `127.0.0.1:8890/mcp` is listening and the generated configuration uses `type: remote`. |
+| Empty final chat content | Increase the token budget for reasoning requests. Installation tests disable thinking for their small probes. |
+| Python CLI conflicts | Rerun step 6 to install CLIs in isolated environments; avoid adding packages to system Python. |
 
-## Repo layout
+## Development and validation
 
+```bash
+for script in *.sh scripts/*.sh; do bash -n "$script"; done
+python3 -m venv .test-venv
+.test-venv/bin/python -m pip install 'mcp>=1.12,<2'
+.test-venv/bin/python -m unittest discover -s tests -v
 ```
-├── install.sh                  # master installer (idempotent)
+
+Tests cover simulated five-hour generation, stalled generation, inference failures behind a healthy HTTP endpoint, startup grace, manual service stops, and repeated fresh-client MCP initialize/list/call requests against a local fixture. They do not need a GPU or execute security scans. CI runs on Python 3.10 and 3.12.
+
+These tests do not establish that a fresh Ubuntu/GPU installation or a multi-hour inference workload has passed. Run the installer and `scripts/07-verify.sh` on your deployment host for runtime validation.
+
+## Repository layout
+
+```text
+.
+├── install.sh                   # Master installer and preflight
 ├── start-stack.sh / stop-stack.sh
-├── config/opencode.json        # opencode provider + MCP config template
-├── systemd/                    # unit templates (user/home substituted at install)
-│   ├── llama-cyberstrike.service
-│   ├── hexstrike.service
-│   └── hexstrike-bridge.service
-└── scripts/
-    ├── common.sh               # model identity + logging + shared helpers
-    ├── 01-install-llamacpp.sh
-    ├── 02-download-model.sh
-    ├── 03-setup-services.sh
-    ├── 04-install-hexstrike.sh
-    ├── 05-install-opencode.sh
-    ├── 06-install-all-tools.sh  # full ~120-tool HexStrike toolset
-    └── 07-verify.sh
+├── config/opencode.json         # Provider and MCP template
+├── systemd/                     # Model, API, bridge, watchdog service/timer
+├── scripts/
+│   ├── common.sh                # Shared installation helpers
+│   ├── 01-install-llamacpp.sh
+│   ├── 02-download-model.sh
+│   ├── 03-setup-services.sh
+│   ├── 04-install-hexstrike.sh
+│   ├── 05-install-opencode.sh
+│   ├── 06-install-all-tools.sh
+│   ├── 07-verify.sh
+│   ├── hexstrike_bridge.py      # Stateless MCP launcher
+│   ├── llama_watchdog.py        # Inference monitoring and recovery
+│   └── verify_stack.py          # Real API and local MCP checks
+├── tests/                       # Recovery and MCP transport tests
+└── .github/workflows/validate.yml
 ```
 
-## Legal note
+## Upstream projects
 
-The HexStrike tooling and the Qwen3.8 abliterated model are for **authorized security testing
-only** (your own systems, labs, or written-permission engagements). `scanme.nmap.org`
-is explicitly provided by the Nmap project for scan testing.
+- [llama.cpp](https://github.com/ggml-org/llama.cpp) — inference runtime.
+- [HexStrike AI](https://github.com/netcuter/Hexstrike-AI) — tools API and MCP definitions.
+- [OpenCode](https://opencode.ai/) — agent CLI.
+- [Official Python MCP SDK](https://github.com/modelcontextprotocol/python-sdk) — Streamable HTTP transport.
+- [Huihui model repository](https://huggingface.co/huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF) — selected model weights.
+
+Upstream projects, models, and installed tools retain their own licenses and requirements. Use security tools only on systems you own or are explicitly authorized to assess.

@@ -3,13 +3,19 @@
 # (OpenAI-compatible on :8000) + HexStrike MCP (remote streamable-http bridge daemon).
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
+require_ubuntu_2204
+bootstrap
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # --- Node.js (needed for npm install -g opencode-ai) --------------------------
-if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1 || \
+   ! node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)'; then
   log_info "Installing Node.js LTS (NodeSource)…"
-  curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+  NODE_SETUP="$(mktemp)"
+  curl -fsSL --retry 3 https://deb.nodesource.com/setup_22.x -o "$NODE_SETUP"
+  sudo -E bash "$NODE_SETUP"
+  rm -f "$NODE_SETUP"
   apt_install nodejs
 fi
 log_info "Node $(node --version) / npm $(npm --version)"
@@ -19,7 +25,10 @@ if ! command -v opencode >/dev/null 2>&1; then
   log_info "Installing opencode-ai globally…"
   if ! sudo npm install -g opencode-ai; then
     log_warn "npm install failed — trying the official install script."
-    curl -fsSL https://opencode.ai/install | bash
+    OC_SETUP="$(mktemp)"
+    curl -fsSL --retry 3 https://opencode.ai/install -o "$OC_SETUP"
+    bash "$OC_SETUP"
+    rm -f "$OC_SETUP"
     export PATH="$STACK_HOME/.opencode/bin:$PATH"
   fi
 fi
@@ -33,11 +42,15 @@ log_ok "opencode: $(command -v opencode)"
 
 # --- config --------------------------------------------------------------------
 mkdir -p "$OPENCODE_CONFIG_DIR"
+[ ! -f "$OPENCODE_CONFIG_DIR/opencode.json" ] || \
+  cp -p "$OPENCODE_CONFIG_DIR/opencode.json" "$OPENCODE_CONFIG_DIR/opencode.json.backup.$(date +%Y%m%d%H%M%S).$$"
 sed -e "s|__HEXSTRIKE_DIR__|$HEXSTRIKE_DIR|g" \
     -e "s|__HEXSTRIKE_MCP_BRIDGE_PORT__|$HEXSTRIKE_MCP_BRIDGE_PORT|g" \
     -e "s|__MODEL_ALIAS__|$MODEL_ALIAS|g" \
     "$REPO_ROOT/config/opencode.json" > "$OPENCODE_CONFIG_DIR/opencode.json"
 log_ok "Wrote $OPENCODE_CONFIG_DIR/opencode.json"
+python3 -m json.tool "$OPENCODE_CONFIG_DIR/opencode.json" >/dev/null
+opencode --version
 
 # sanity: the bridge daemon must exist (serves MCP over streamable-http) and
 # the HexStrike entry point it wraps must be present.

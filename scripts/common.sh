@@ -6,9 +6,24 @@ set -euo pipefail
 
 # --- identity ---------------------------------------------------------------
 # When invoked through sudo, keep the real user so files land in THEIR home.
-STACK_USER="${SUDO_USER:-$(id -un)}"
-STACK_HOME="$(getent passwd "$STACK_USER" | cut -d: -f6)"
+# Run user-owned downloads/configuration as the login user, even with sudo.
+if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+  exec sudo -H -u "$SUDO_USER" bash "$0" "$@"
+fi
+STACK_USER="$(id -un)"
+STACK_GROUP="$(id -gn 2>/dev/null || id -g)"
+STACK_HOME="$(getent passwd "$STACK_USER" 2>/dev/null | cut -d: -f6 || true)"
 [ -n "$STACK_HOME" ] || STACK_HOME="$HOME"
+export HOME="$STACK_HOME"
+export PATH="/usr/local/bin:$STACK_HOME/.local/bin:$STACK_HOME/.opencode/bin:/snap/bin:$PATH"
+# Root-only servers need no sudo package.
+if [ "$(id -u)" -eq 0 ]; then
+  sudo() {
+    [ "${1:-}" = -v ] && return 0
+    [ "${1:-}" = -E ] && shift
+    "$@"
+  }
+fi
 
 MODELS_DIR="$STACK_HOME/models"
 LLAMA_DIR="$STACK_HOME/llama.cpp"
@@ -44,16 +59,72 @@ log_banner() {
 
 # --- guards -----------------------------------------------------------------
 require_ubuntu_2204() {
-  if [ -r /etc/os-release ]; then
-    . /etc/os-release
-    if [ "${ID:-}" != "ubuntu" ] || [ "${VERSION_ID:-}" != "22.04" ]; then
-      log_warn "This stack targets Ubuntu 22.04 (detected: ${PRETTY_NAME:-unknown}). Continuing anyway."
-    fi
+  if [ "$(uname -s)" != Linux ] || [ ! -r /etc/os-release ]; then
+    log_error "Run this installer on Ubuntu 22.04/24.04 Linux with systemd (Windows/Git Bash is unsupported)."
+    return 1
   fi
+  . /etc/os-release
+  if [ "${ID:-}" != ubuntu ] || [[ ! "${VERSION_ID:-}" =~ ^(22.04|24.04)$ ]]; then
+    log_error "Supported systems: Ubuntu 22.04/24.04; detected ${PRETTY_NAME:-unknown}."
+    return 1
+  fi
+  [ "$(uname -m)" = x86_64 ] || { log_error "This installer currently requires x86_64."; return 1; }
+  [ -d /run/systemd/system ] || { log_error "systemd must be running (enable it first if using WSL)."; return 1; }
 }
 
 apt_install() {
-  DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --no-install-recommends "$@"
+  sudo env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=180 install -y --no-install-recommends "$@"
+}
+
+bootstrap() {
+  require_ubuntu_2204 || return 1
+  sudo -v || return 1
+  sudo apt-get -o DPkg::Lock::Timeout=180 update || return 1
+  apt_install ca-certificates curl git jq unzip tar python3 python3-pip python3-venv software-properties-common
+}
+
+# Each CLI gets its own environment so incompatible dependency pins cannot
+# break other tools or Ubuntu's Python packages.
+install_python_cli() {
+  local name="$1" spec="$2" venv="/opt/pharaoh-venvs/$1" target entries
+  sudo mkdir -p /opt/pharaoh-venvs || return 1
+  sudo python3 -m venv "$venv" || return 1
+  sudo "$venv/bin/python" -m pip install --upgrade pip || return 1
+  sudo "$venv/bin/python" -m pip install --upgrade "$spec" || return 1
+  sudo "$venv/bin/python" -m pip check || return 1
+  entries="$(sudo "$venv/bin/python" - "$name" <<'PY'
+from importlib.metadata import distribution
+import sys
+name = {'scout-suite': 'ScoutSuite'}.get(sys.argv[1], sys.argv[1])
+for entry in distribution(name).entry_points:
+    if entry.group == 'console_scripts':
+        print(entry.name)
+PY
+)" || return 1
+  [ -n "$entries" ] || { log_error "No CLI entry points installed for $name"; return 1; }
+  while IFS= read -r target; do
+    # Keep the HTTPX Python client's entry point away from ProjectDiscovery httpx.
+    [ "$target" = httpx ] && continue
+    sudo ln -sf "$venv/bin/$target" "/usr/local/bin/$target" || return 1
+  done <<<"$entries"
+}
+
+ensure_go() {
+  local metadata filename checksum tmp
+  # Jammy's Go 1.18 cannot bootstrap current tools or automatic toolchains.
+  if command -v go >/dev/null 2>&1 && go version | grep -Eq 'go1\.(2[4-9]|[3-9][0-9])\.'; then return 0; fi
+  metadata="$(curl -fsSL --retry 3 'https://go.dev/dl/?mode=json')" || return 1
+  filename="$(jq -r '[.[0].files[] | select(.os=="linux" and .arch=="amd64" and .kind=="archive")][0].filename' <<<"$metadata")" || return 1
+  checksum="$(jq -r '[.[0].files[] | select(.os=="linux" and .arch=="amd64" and .kind=="archive")][0].sha256' <<<"$metadata")" || return 1
+  [[ "$filename" =~ ^go[0-9.]+\.linux-amd64\.tar\.gz$ ]] || return 1
+  tmp="$(mktemp -d)" || return 1
+  curl -fSL --retry 3 "https://go.dev/dl/$filename" -o "$tmp/go.tar.gz" || { rm -rf "$tmp"; return 1; }
+  printf '%s  %s\n' "$checksum" "$tmp/go.tar.gz" | sha256sum -c - || { rm -rf "$tmp"; return 1; }
+  sudo mkdir -p /usr/local/lib/pharaoh-go || return 1
+  sudo tar xzf "$tmp/go.tar.gz" -C /usr/local/lib/pharaoh-go || return 1
+  rm -rf "$tmp"
+  sudo ln -sf /usr/local/lib/pharaoh-go/go/bin/go /usr/local/bin/go || return 1
+  /usr/local/bin/go version
 }
 
 # retry <times> <cmd...>

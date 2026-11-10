@@ -1,112 +1,47 @@
 #!/usr/bin/env bash
-# Step 7 — end-to-end verification. All checks must pass.
-#   1. llama.cpp: chat completion "say OK" returns text
-#   2. HexStrike: tool list includes nmap, nuclei, sqlmap
-#   3. opencode: non-interactive run lists MCP tools
-#   4. real test: nmap scan of scanme.nmap.org through the agent
+# Verify actual responses instead of matching words in agent output.
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
+require_ubuntu_2204
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-FAILURES=0
-check() { # check <name> <ok:0/1>
-  if [ "$2" -eq 0 ]; then log_ok "$1"; else log_error "$1"; FAILURES=$((FAILURES+1)); fi
-}
-
-# wait_http <url> <max-seconds> — poll until the endpoint answers HTTP 200.
-# Services (especially llama.cpp loading a large model) need time on first start.
 wait_http() {
-  local url="$1" max="$2" elapsed=0
-  until curl -fsS -o /dev/null -m 5 "$url" 2>/dev/null; do
-    elapsed=$((elapsed + 5))
-    if [ "$elapsed" -ge "$max" ]; then return 1; fi
+  local url="$1" deadline=$((SECONDS + $2))
+  until curl -fsS --max-time 5 -o /dev/null "$url"; do
+    [ "$SECONDS" -lt "$deadline" ] || return 1
     sleep 5
   done
 }
+sudo systemctl start llama-cyberstrike hexstrike hexstrike-bridge
+wait_http "http://127.0.0.1:$LLAMA_PORT/health" 600
+wait_http "http://127.0.0.1:$HEXSTRIKE_PORT/health" 300
+python3 "$REPO_ROOT/scripts/verify_stack.py"
+systemctl is-active --quiet llama-watchdog.timer
+log_ok "API, inference, tools, MCP execution and watchdog checks passed."
 
-# --- 1. llama.cpp ---------------------------------------------------------------
-log_banner "1/4 llama.cpp chat completion"
-systemctl is-active --quiet llama-cyberstrike || sudo systemctl start llama-cyberstrike
-if wait_http "http://localhost:$LLAMA_PORT/v1/models" 600; then
-  log_info "llama.cpp is up — sending test completion"
-else
-  log_error "llama.cpp did not respond on port $LLAMA_PORT within 10 minutes"
-fi
-RESP="$(curl -fsS "http://localhost:$LLAMA_PORT/v1/chat/completions" \
-  -H 'Content-Type: application/json' \
-  -d "{\"model\":\"$MODEL_ALIAS\",\"messages\":[{\"role\":\"user\",\"content\":\"say OK\"}],\"max_tokens\":512}" 2>/dev/null || true)"
-CONTENT_OK=1
-if echo "$RESP" | python3 -c 'import json,sys; m=json.load(sys.stdin)["choices"][0]["message"]; assert (m.get("content") or "").strip(), "empty content"' 2>/dev/null; then
-  CONTENT_OK=0
-fi
-check "llama.cpp 'say OK' returned text" $CONTENT_OK
-
-# --- 2. HexStrike tool list -------------------------------------------------------
-log_banner "2/4 HexStrike tool list"
-systemctl is-active --quiet hexstrike || sudo systemctl start hexstrike
-if wait_http "http://localhost:$HEXSTRIKE_PORT/health" 300; then
-  log_info "HexStrike is up — checking exposed tools"
-else
-  log_error "HexStrike did not respond on port $HEXSTRIKE_PORT within 5 minutes"
-fi
-TOOLS="$(curl -fsS "http://localhost:$HEXSTRIKE_PORT/api/tools" 2>/dev/null || \
-         curl -fsS "http://localhost:$HEXSTRIKE_PORT/health" 2>/dev/null || true)"
-HEX_OK=0
-for t in nmap nuclei sqlmap; do
-  echo "$TOOLS" | grep -qi "$t" || HEX_OK=1
-done
-check "HexStrike exposes nmap / nuclei / sqlmap" $HEX_OK
-
-# --- 2b. MCP bridge (streamable-http on :8890) --------------------------------------
-systemctl is-active --quiet hexstrike-bridge || sudo systemctl start hexstrike-bridge
-BRIDGE_ACTIVE=1; systemctl is-active --quiet hexstrike-bridge && BRIDGE_ACTIVE=0
-check "hexstrike-bridge systemd service is active" $BRIDGE_ACTIVE
-
-BRIDGE_HANDSHAKE=1
-BRIDGE_RESP="$(curl -fsS -m 10 -X POST "http://127.0.0.1:$HEXSTRIKE_MCP_BRIDGE_PORT/mcp" \
-  -H 'Content-Type: application/json' \
-  -H 'Accept: application/json, text/event-stream' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"verify-check","version":"0"}}}' 2>/dev/null || true)"
-echo "$BRIDGE_RESP" | grep -q 'hexstrike-ai-mcp' && BRIDGE_HANDSHAKE=0
-check "MCP bridge handshake on :$HEXSTRIKE_MCP_BRIDGE_PORT" $BRIDGE_HANDSHAKE
-
-# --- 3. opencode MCP listing -------------------------------------------------------
-log_banner "3/4 opencode MCP tool listing"
-NPM_PREFIX="$(npm config get prefix 2>/dev/null || true)"
-export PATH="$NPM_PREFIX/bin:$STACK_HOME/.opencode/bin:$PATH"
-cd "$STACK_HOME"  # run outside the repo so opencode uses ~/.config/opencode
-MCP_OK=1
-for attempt in 1 2 3; do
-  MCP_OUT="$(timeout 240 opencode run \
-    "List the tools provided by the hexstrike MCP server (for example hexstrike_nmap_scan, hexstrike_nuclei_scan, hexstrike_sqlmap_scan). Do not read or write any local files — just list the MCP tool names." \
-    2>&1 || true)"
-  echo "$MCP_OUT" | tail -20
-  if echo "$MCP_OUT" | grep -Eiq 'nmap|nuclei|sqlmap|hexstrike'; then
-    MCP_OK=0; break
-  fi
-  log_warn "MCP listing attempt $attempt/3 gave no usable answer — retrying"
-done
-check "opencode lists HexStrike MCP tools" $MCP_OK
-
-# --- 4. real scan test ---------------------------------------------------------------
-log_banner "4/4 real nmap scan via agent (scanme.nmap.org)"
-SCAN_OK=1
-for attempt in 1 2 3; do
-  SCAN_OUT="$(timeout 600 opencode run \
-    "Call the hexstrike_nmap_scan MCP tool with target=scanme.nmap.org and scan_type=-sV, then summarize the open ports from the tool result. Do not read or write any local files — use the MCP tool directly." \
-    2>&1 || true)"
-  echo "$SCAN_OUT" | tail -30
-  if echo "$SCAN_OUT" | grep -Eiq 'open|PORT|22/tcp|80/tcp'; then
-    SCAN_OK=0; break
-  fi
-  log_warn "scan attempt $attempt/3 failed — retrying"
-done
-check "agent ran real nmap scan through MCP" $SCAN_OK
-
-# --- summary ---------------------------------------------------------------------------
-log_banner "Verification summary"
-if [ "$FAILURES" -eq 0 ]; then
-  log_ok "ALL CHECKS PASSED — the stack is fully operational."
-else
-  log_error "$FAILURES check(s) failed — see above, then re-run ./scripts/07-verify.sh"
+# Verify the configured agent can complete a request through the local provider.
+cd "$STACK_HOME"
+AGENT_OUTPUT="$(mktemp)"
+trap 'rm -f "$AGENT_OUTPUT"' EXIT
+if ! timeout 600 opencode run --format json "Reply with exactly OK. Do not use tools." > "$AGENT_OUTPUT"; then
+  cat "$AGENT_OUTPUT"
+  log_error "OpenCode could not complete a local model request."
   exit 1
 fi
+python3 - "$AGENT_OUTPUT" <<'PY'
+import json, sys
+texts = []
+for line in open(sys.argv[1], encoding="utf-8"):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("type") == "error":
+        raise SystemExit(f"OpenCode error: {event}")
+    if event.get("type") == "text":
+        texts.append(event.get("part", {}).get("text", ""))
+if not "".join(texts).strip():
+    raise SystemExit("OpenCode returned no final text")
+print("[OK] OpenCode completed a local inference request")
+PY
+log_ok "ALL CHECKS PASSED"

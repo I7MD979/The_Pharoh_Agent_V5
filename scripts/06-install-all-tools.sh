@@ -3,7 +3,7 @@
 # Covers every tool listed by the HexStrike /health tools_status endpoint:
 # apt packages, Go tools, pip CLIs, Ruby gems, GitHub release binaries and
 # git-based tools. Idempotent and fault-tolerant: failures are logged and
-# summarized, never abort the run. Proprietary/GUI tools (burpsuite, maltego,
+# summarized, then return nonzero if any failed. Proprietary/GUI tools (burpsuite, maltego,
 # postman, insomnia, clair, falco) cannot be installed headless — skipped.
 #
 # Hard-won fixes baked in (see git history):
@@ -11,8 +11,7 @@
 #   - ccache disabled for radare2 (ccache on this image cannot create executables)
 #   - netexec needs Python >= 3.11 → installed into a dedicated python3.11 venv
 #   - theHarvester pinned to 4.4.4 (newer releases require Python >= 3.11/3.14)
-#   - prowler installed with --ignore-installed wfuzz (apt wfuzz metadata is
-#     unparseable by modern pip and aborts dependency resolution)
+#   - Python CLIs use isolated environments to avoid system metadata conflicts
 #   - evil-winrm gem needs libkrb5-dev (gssapi native extension)
 #   - hakrawler module path has no /v2 suffix anymore
 #   - GOMEMLIMIT caps Go builds so they survive next to llama.cpp's RAM usage
@@ -22,10 +21,20 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 # abort the run, failures are collected in FAILS and summarized at the end.
 set +e
 
+require_ubuntu_2204 || exit 1
+bootstrap || exit 1
+TOOLS_LOG="$STACK_HOME/pharaoh-tools-install.log"
+touch "$TOOLS_LOG" || exit 1
+log_info "Detailed tool log: $TOOLS_LOG"
+
 FAILS=()
 ok()   { log_ok "$*"; }
 bad()  { log_error "$*"; FAILS+=("$*"); }
-have() { command -v "$1" >/dev/null 2>&1; }
+have() {
+  command -v "$1" >/dev/null 2>&1 || return 1
+  # The Python HTTP client has the same command name as ProjectDiscovery httpx.
+  [ "$1" != httpx ] || httpx -version >>"$TOOLS_LOG" 2>&1
+}
 
 # gh_asset <repo> <asset-regex> <binary-name> [ref, e.g. tags/2.2.2 — default latest]
 # Download a GitHub release asset and install the binary to /usr/local/bin.
@@ -39,9 +48,9 @@ gh_asset() {
   log_info "Downloading $name from $url"
   if ! curl -fsSL --retry 3 "$url" -o "$tmp/asset"; then bad "$name: download failed"; rm -rf "$tmp"; return 1; fi
   case "$url" in
-    *.zip)     unzip -qo "$tmp/asset" -d "$tmp/x" ;;
-    *.tar.gz|*.tgz) mkdir -p "$tmp/x" && tar xzf "$tmp/asset" -C "$tmp/x" ;;
-    *.deb)     sudo dpkg -i "$tmp/asset" >/dev/null 2>&1 || sudo apt-get -f install -y ;;
+    *.zip)     unzip -qo "$tmp/asset" -d "$tmp/x" || { bad "$name: extraction failed"; rm -rf "$tmp"; return 1; } ;;
+    *.tar.gz|*.tgz) mkdir -p "$tmp/x" && tar xzf "$tmp/asset" -C "$tmp/x" || { bad "$name: extraction failed"; rm -rf "$tmp"; return 1; } ;;
+    *.deb)     sudo dpkg -i "$tmp/asset" >>"$TOOLS_LOG" 2>&1 || sudo apt-get -f install -y ;;
     *)         mkdir -p "$tmp/x" && cp "$tmp/asset" "$tmp/x/$name" ;;
   esac
   if [ "$name" = "ghidra" ]; then
@@ -59,7 +68,7 @@ gh_asset() {
   bin="$(find "$tmp/x" -type f -name "$name*" -perm -u+x 2>/dev/null | head -1)"
   [ -n "$bin" ] || bin="$(find "$tmp/x" -type f -name "$name*" | head -1)"
   if [ -n "$bin" ]; then
-    sudo install -m 0755 "$bin" "/usr/local/bin/$name"
+    sudo install -m 0755 "$bin" "/usr/local/bin/$name" || { bad "$name: install failed"; rm -rf "$tmp"; return 1; }
     ok "$name installed"; rm -rf "$tmp"; return 0
   fi
   have "$name" && { ok "$name installed via package"; rm -rf "$tmp"; return 0; }
@@ -85,20 +94,21 @@ APT_PKGS=(
 )
 AVAIL=()
 for p in "${APT_PKGS[@]}"; do
-  if apt-cache show "$p" >/dev/null 2>&1; then AVAIL+=("$p"); else log_warn "no apt package: $p"; fi
+  if apt-cache show "$p" >>"$TOOLS_LOG" 2>&1; then AVAIL+=("$p"); else log_warn "no apt package: $p"; fi
 done
-if sudo apt-get install -y --no-install-recommends "${AVAIL[@]}"; then
+if apt_install "${AVAIL[@]}"; then
   ok "apt batch installed (${#AVAIL[@]} packages)"
 else
   log_warn "apt batch failed — retrying one by one"
   for p in "${AVAIL[@]}"; do
-    sudo apt-get install -y --no-install-recommends "$p" >/dev/null 2>&1 \
+    apt_install "$p" >>"$TOOLS_LOG" 2>&1 \
       && ok "apt: $p" || bad "apt: $p"
   done
 fi
 
 # ============================================================================
 log_banner "2/7 Go tools (GOBIN=/usr/local/bin)"
+ensure_go || bad "Go bootstrap"
 export PATH="$PATH:/snap/bin"
 declare -A GO_TOOLS=(
   [subfinder]="github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"
@@ -116,8 +126,8 @@ declare -A GO_TOOLS=(
 for t in "${!GO_TOOLS[@]}"; do
   have "$t" && { ok "$t already installed"; continue; }
   log_info "go install $t"
-  if sudo -E env GOBIN=/usr/local/bin GOPATH="$HOME/go" GOFLAGS=-mod=mod GOMEMLIMIT=8GiB \
-       go install "${GO_TOOLS[$t]}" >/dev/null 2>&1; then
+  if sudo env GOBIN=/usr/local/bin GOPATH=/var/cache/pharaoh-go GOCACHE=/var/cache/pharaoh-go/build GOFLAGS=-mod=mod GOMEMLIMIT=8GiB \
+       "$(command -v go)" install "${GO_TOOLS[$t]}" >>"$TOOLS_LOG" 2>&1; then
     ok "go: $t"
   else
     bad "go: $t"
@@ -125,20 +135,20 @@ for t in "${!GO_TOOLS[@]}"; do
 done
 
 # ============================================================================
-log_banner "3/7 pip CLIs (system python → /usr/local/bin)"
-sudo pip3 install --upgrade pip >/dev/null 2>&1 || true
+log_banner "3/7 pip CLIs (isolated environments → /usr/local/bin)"
+apt_install python3-venv || bad "python3-venv"
 PIP_PKGS=(pwntools ROPGadget ropper volatility3 arjun uro checkov
           kube-hunter sherlock-project social-analyzer censys shodan)
 for p in "${PIP_PKGS[@]}"; do
   log_info "pip install $p"
-  if sudo pip3 install --quiet "$p" >/dev/null 2>&1; then ok "pip: $p"; else bad "pip: $p"; fi
+  if install_python_cli "$p" "$p" >>"$TOOLS_LOG" 2>&1; then ok "pip: $p"; else bad "pip: $p"; fi
 done
 
 # ============================================================================
 log_banner "4/7 Ruby gems"
 for g in zsteg one_gadget; do
   log_info "gem install $g"
-  if sudo gem install "$g" --no-document >/dev/null 2>&1; then ok "gem: $g"; else bad "gem: $g"; fi
+  if sudo gem install "$g" --no-document >>"$TOOLS_LOG" 2>&1; then ok "gem: $g"; else bad "gem: $g"; fi
 done
 
 # ============================================================================
@@ -146,7 +156,7 @@ log_banner "5/7 GitHub release binaries"
 gh_asset "epi052/feroxbuster"      'x86_64-linux-feroxbuster\.zip$' feroxbuster || true
 # rustscan's latest releases ship no assets — pin the last one that does
 gh_asset "RustScan/RustScan"       '_amd64\.deb$'           rustscan "tags/2.2.2" || true
-gh_asset "Sh1Yo/x8"                'linux'                  x8 || true
+gh_asset "Sh1Yo/x8"                'x86_64.*linux.*\.tar\.gz$' x8 || true
 gh_asset "io12/pwninit"            '/pwninit$'              pwninit || true
 gh_asset "tenable/terrascan"       'Linux_x86_64\.tar\.gz$' terrascan || true
 gh_asset "aquasecurity/kube-bench" 'linux_amd64\.tar\.gz$'  kube-bench || true
@@ -158,8 +168,15 @@ log_banner "6/7 git-based tools (/opt + wrappers)"
 git_tool() { # <name> <repo-url> <wrapper-cmd>
   local name="$1" url="$2" wrapper="${3:-}"
   local dest="/opt/$name"
-  [ -d "$dest" ] || sudo git clone --depth 1 "$url" "$dest" >/dev/null 2>&1 \
+  [ -d "$dest" ] || sudo git clone --depth 1 "$url" "$dest" >>"$TOOLS_LOG" 2>&1 \
     || { bad "git clone $name"; return 1; }
+  if [[ "$wrapper" == *python3* ]]; then
+    sudo python3 -m venv "$dest/venv" || { bad "venv: $name"; return 1; }
+    if [ -f "$dest/requirements.txt" ]; then
+      sudo "$dest/venv/bin/python" -m pip install -r "$dest/requirements.txt" || { bad "requirements: $name"; return 1; }
+    fi
+    wrapper="${wrapper//python3/$dest/venv/bin/python}"
+  fi
   if [ -n "$wrapper" ]; then
     printf '#!/bin/bash\n%s "$@"\n' "$wrapper" | sudo tee "/usr/local/bin/$name" >/dev/null
     sudo chmod +x "/usr/local/bin/$name"
@@ -168,12 +185,11 @@ git_tool() { # <name> <repo-url> <wrapper-cmd>
 }
 git_tool enum4linux-ng https://github.com/cddmp/enum4linux-ng.git \
   "cd /opt/enum4linux-ng && python3 enum4linux-ng.py" || true
-sudo pip3 install --quiet -r /opt/enum4linux-ng/requirements.txt >/dev/null 2>&1 || true
+
 git_tool jwt_tool https://github.com/ticarpi/jwt_tool.git \
   "python3 /opt/jwt_tool/jwt_tool.py" || true
-sudo pip3 install --quiet -r /opt/jwt_tool/requirements.txt >/dev/null 2>&1 || true
-git_tool paramspider https://github.com/devanshbatham/paramspider.git \
-  "python3 /opt/paramspider/paramspider.py" || true
+
+install_python_cli paramspider git+https://github.com/devanshbatham/paramspider.git && ok "paramspider" || bad "paramspider"
 git_tool docker-bench-security https://github.com/docker/docker-bench-security.git || true
 git_tool libc-database https://github.com/niklasb/libc-database.git || true
 # stegsolve (jar) — best effort from GitHub mirror
@@ -192,20 +208,11 @@ fi
 # ============================================================================
 log_banner "7/7 stragglers (source builds / special cases)"
 
-# Fix Go module cache ownership if earlier root runs broke it, then retry hakrawler
-sudo chown -R "$STACK_USER:$STACK_USER" "$STACK_HOME/go" 2>/dev/null || true
-if ! have hakrawler; then
-  log_info "go install hakrawler (retry)"
-  sudo -E env GOBIN=/usr/local/bin GOPATH="$HOME/go" GOFLAGS=-mod=mod \
-    go install github.com/hakluke/hakrawler@latest >/dev/null 2>&1 \
-    && ok "go: hakrawler" || bad "go: hakrawler"
-fi
-
 # metasploit via the official Rapid7 installer (not in Ubuntu 22.04 repos)
 if ! have msfconsole; then
   log_info "Installing Metasploit via Rapid7 msfinstall…"
   if curl -fsSL https://raw.githubusercontent.com/rapid7/metasploit-omnibus/master/config/templates/metasploit-framework-wrappers/msfupdate.erb \
-       -o /tmp/msfinstall && sudo bash /tmp/msfinstall >/dev/null 2>&1; then
+       -o /tmp/msfinstall && sudo bash /tmp/msfinstall >>"$TOOLS_LOG" 2>&1; then
     ok "metasploit-framework"
   else
     bad "metasploit-framework (msfinstall)"
@@ -218,7 +225,7 @@ fi
 if ! have radare2 && ! have r2; then
   log_info "Building radare2 from source (this takes a few minutes)…"
   if [ ! -d /opt/radare2 ]; then
-    sudo git clone --depth 1 https://github.com/radareorg/radare2 /opt/radare2 >/dev/null 2>&1
+    sudo git clone --depth 1 https://github.com/radareorg/radare2 /opt/radare2 >>"$TOOLS_LOG" 2>&1
   fi
   sudo git config --global --add safe.directory /opt/radare2 2>/dev/null || true
   if [ -d /opt/radare2 ] && ( cd /opt/radare2 && sudo env -u SUDO_USER CCACHE_DISABLE=1 CC=gcc CXX=g++ bash sys/install.sh >/tmp/r2-build.log 2>&1 ); then
@@ -248,23 +255,23 @@ fi
 for g in wpscan evil-winrm; do
   have "${g//_/-}" && continue
   log_info "gem install $g"
-  sudo gem install "$g" --no-document >/dev/null 2>&1 && ok "gem: $g" || bad "gem: $g"
+  sudo gem install "$g" --no-document >>"$TOOLS_LOG" 2>&1 && ok "gem: $g" || bad "gem: $g"
 done
 
 # netexec — not on PyPI; requires Python >= 3.11 (jammy ships 3.10), so give it
 # its own python3.11 venv and install from git. python3.11-dev is required
 # (netifaces compiles C extensions needing Python.h).
 if ! have nxc; then
-  if ! command -v python3.11 >/dev/null 2>&1; then
+  if ! command -v python3.11 >>"$TOOLS_LOG" 2>&1; then
     log_info "Installing Python 3.11 (deadsnakes) for netexec…"
-    sudo add-apt-repository -y ppa:deadsnakes/ppa >/dev/null 2>&1
-    sudo apt-get update -qq >/dev/null 2>&1
-    sudo apt-get install -y --no-install-recommends python3.11 python3.11-venv python3.11-dev >/dev/null 2>&1
+    sudo add-apt-repository -y ppa:deadsnakes/ppa >>"$TOOLS_LOG" 2>&1
+    sudo apt-get update -qq >>"$TOOLS_LOG" 2>&1
+    apt_install python3.11 python3.11-venv python3.11-dev >>"$TOOLS_LOG" 2>&1
   fi
-  if command -v python3.11 >/dev/null 2>&1; then
+  if command -v python3.11 >>"$TOOLS_LOG" 2>&1; then
     sudo python3.11 -m venv /opt/nxc-venv 2>/dev/null \
-      && sudo /opt/nxc-venv/bin/pip install --quiet --upgrade pip >/dev/null 2>&1 \
-      && sudo /opt/nxc-venv/bin/pip install --quiet git+https://github.com/Pennyw0rth/NetExec.git >/dev/null 2>&1 \
+      && sudo /opt/nxc-venv/bin/pip install --quiet --upgrade pip >>"$TOOLS_LOG" 2>&1 \
+      && sudo /opt/nxc-venv/bin/pip install --quiet git+https://github.com/Pennyw0rth/NetExec.git >>"$TOOLS_LOG" 2>&1 \
       && sudo ln -sf /opt/nxc-venv/bin/nxc /usr/local/bin/nxc \
       && sudo ln -sf /opt/nxc-venv/bin/nxc /usr/local/bin/netexec \
       && ok "netexec (python3.11 venv)" || bad "netexec (venv install)"
@@ -283,54 +290,43 @@ declare -A GIT_PIP=(
 for p in "${!GIT_PIP[@]}"; do
   have "$(echo "$p" | tr 'A-Z' 'a-z')" && continue
   log_info "pip install $p (from git)"
-  sudo pip3 install --quiet "${GIT_PIP[$p]}" >/dev/null 2>&1 && ok "pip: $p" || bad "pip: $p (git)"
+  install_python_cli "$p" "${GIT_PIP[$p]}" >>"$TOOLS_LOG" 2>&1 && ok "pip: $p" || bad "pip: $p (git)"
 done
 
 # prowler — apt's wfuzz ships metadata modern pip cannot parse; keep wfuzz, take prowler
-have prowler || { sudo pip3 install --quiet --ignore-installed wfuzz prowler >/dev/null 2>&1 \
+have prowler || { install_python_cli prowler prowler >>"$TOOLS_LOG" 2>&1 \
   && ok "pip: prowler" || bad "pip: prowler"; }
 
 # graphql-cop is a script repo, not a pip package
-if [ ! -d /opt/graphql-cop ]; then
-  if sudo git clone --depth 1 https://github.com/dolevf/graphql-cop.git /opt/graphql-cop >/dev/null 2>&1; then
-    [ -f /opt/graphql-cop/requirements.txt ] && \
-      sudo pip3 install --quiet -r /opt/graphql-cop/requirements.txt >/dev/null 2>&1
-    gcmain="$(sudo ls /opt/graphql-cop/*.py 2>/dev/null | head -1)"
-    [ -n "$gcmain" ] && printf '#!/bin/bash\npython3 %s "$@"\n' "$gcmain" | sudo tee /usr/local/bin/graphql-cop >/dev/null \
-      && sudo chmod +x /usr/local/bin/graphql-cop
-    ok "graphql-cop"
-  else
-    bad "graphql-cop (clone)"
-  fi
-fi
+git_tool graphql-cop https://github.com/dolevf/graphql-cop.git \
+  "python3 /opt/graphql-cop/graphql-cop.py" || true
 
 # amass via Go (not in jammy repos)
 if ! have amass; then
   log_info "go install amass v4"
-  sudo -E env GOBIN=/usr/local/bin GOPATH="$HOME/go" GOFLAGS=-mod=mod GOMEMLIMIT=8GiB \
-    go install github.com/owasp-amass/amass/v4/...@master >/dev/null 2>&1 \
+  sudo env GOBIN=/usr/local/bin GOPATH=/var/cache/pharaoh-go GOCACHE=/var/cache/pharaoh-go/build GOFLAGS=-mod=mod GOMEMLIMIT=8GiB \
+    "$(command -v go)" install github.com/owasp-amass/amass/v4/...@master >>"$TOOLS_LOG" 2>&1 \
     && ok "go: amass" || bad "go: amass"
 fi
 
 # git-clone tools with wrapper scripts
-git_tool responder  https://github.com/lgandx/Responder.git          "cd /opt/responder && sudo python3 Responder.py" || true
+git_tool responder  https://github.com/lgandx/Responder.git          "cd /opt/responder && python3 Responder.py" || true
 git_tool commix     https://github.com/commixproject/commix.git      "python3 /opt/commix/commix.py" || true
 git_tool xsser      https://github.com/epsylon/xsser.git             "python3 /opt/xsser/xsser/xsser" || true
 git_tool dotdotpwn  https://github.com/wireghoul/dotdotpwn.git       "perl /opt/dotdotpwn/dotdotpwn.pl" || true
 git_tool enum4linux https://github.com/CiscoCXSecurity/enum4linux.git "perl /opt/enum4linux/enum4linux.pl" || true
 git_tool spiderfoot https://github.com/smicallef/spiderfoot.git      "cd /opt/spiderfoot && python3 sf.py" || true
-[ -f /opt/spiderfoot/requirements.txt ] && \
-  sudo pip3 install --quiet -r /opt/spiderfoot/requirements.txt >/dev/null 2>&1 || true
+
 # exploitdb / searchsploit
 if [ ! -d /opt/exploitdb ]; then
-  sudo git clone --depth 1 https://gitlab.com/exploit-database/exploitdb.git /opt/exploitdb >/dev/null 2>&1 \
+  sudo git clone --depth 1 https://gitlab.com/exploit-database/exploitdb.git /opt/exploitdb >>"$TOOLS_LOG" 2>&1 \
     && sudo ln -sf /opt/exploitdb/searchsploit /usr/local/bin/searchsploit \
     && ok "exploitdb/searchsploit" || bad "exploitdb"
 fi
 # hashcat-utils — tiny C tools, just make
 if ! have cap2hccapx.bin && [ ! -d /opt/hashcat-utils ]; then
-  if sudo git clone --depth 1 https://github.com/hashcat/hashcat-utils.git /opt/hashcat-utils >/dev/null 2>&1 \
-     && sudo make -s -C /opt/hashcat-utils >/dev/null 2>&1; then
+  if sudo git clone --depth 1 https://github.com/hashcat/hashcat-utils.git /opt/hashcat-utils >>"$TOOLS_LOG" 2>&1 \
+     && sudo make -s -C /opt/hashcat-utils >>"$TOOLS_LOG" 2>&1; then
     for b in /opt/hashcat-utils/src/*.bin; do sudo ln -sf "$b" "/usr/local/bin/$(basename "$b")"; done
     ok "hashcat-utils"
   else
@@ -341,7 +337,7 @@ fi
 # Makefile (Eclipse layout), so compile the sources directly.
 if ! have hashpump; then
   if [ ! -d /opt/hashpump ]; then
-    sudo git clone --depth 1 https://github.com/miekrr/HashPump /opt/hashpump >/dev/null 2>&1
+    sudo git clone --depth 1 https://github.com/miekrr/HashPump /opt/hashpump >>"$TOOLS_LOG" 2>&1
   fi
   if [ -d /opt/hashpump ] && \
      sudo g++ -O2 -o /usr/local/bin/hashpump /opt/hashpump/*.cpp -lssl -lcrypto 2>/dev/null; then
@@ -385,10 +381,10 @@ fi
 # bulk-extractor — not packaged for jammy; build from source (needs libre2-dev)
 if ! have bulk_extractor && ! have bulk-extractor; then
   log_info "Building bulk-extractor from source…"
-  sudo apt-get install -y --no-install-recommends autoconf automake libtool flex bison \
-    libsqlite3-dev libewf-dev libre2-dev >/dev/null 2>&1
+  apt_install autoconf automake libtool flex bison \
+    libsqlite3-dev libewf-dev libre2-dev >>"$TOOLS_LOG" 2>&1
   [ -d /opt/bulk_extractor ] || \
-    sudo git clone --depth 1 https://github.com/simsong/bulk_extractor.git /opt/bulk_extractor >/dev/null 2>&1
+    sudo git clone --depth 1 https://github.com/simsong/bulk_extractor.git /opt/bulk_extractor >>"$TOOLS_LOG" 2>&1
   if [ -d /opt/bulk_extractor ] && \
      ( cd /opt/bulk_extractor \
        && sudo bash bootstrap.sh >/tmp/be-build.log 2>&1 \
@@ -405,10 +401,14 @@ fi
 # ============================================================================
 log_banner "Summary"
 if [ "${#FAILS[@]}" -eq 0 ]; then
+  rm -f "$STACK_HOME/pharaoh-tool-failures.txt"
   log_ok "All tool groups installed without failures."
 else
   log_warn "${#FAILS[@]} item(s) failed (usually upstream/package issues):"
   printf '  - %s\n' "${FAILS[@]}"
+  printf '%s\n' "${FAILS[@]}" > "$STACK_HOME/pharaoh-tool-failures.txt"
+  log_error "Tool setup incomplete; see $TOOLS_LOG and rerun this step after fixing the listed errors."
+  exit 1
 fi
 log_info "Proprietary/GUI tools intentionally skipped: burpsuite maltego postman insomnia clair falco"
 exit 0
