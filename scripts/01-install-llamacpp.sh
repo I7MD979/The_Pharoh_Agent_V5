@@ -120,17 +120,62 @@ build_from_source() {
     log_info "gcc is $gcc_ver but g++-$gcc_ver is missing — installing it."
     apt_install "g++-$gcc_ver" || apt_install g++
   fi
-  # Prefer an existing /usr/local/cuda toolkit over apt's outdated one.
+
+  # CMake's FindCUDAToolkit CANNOT locate Ubuntu's distro-split nvidia-cuda-toolkit
+  # (headers land in /usr/include, there is no /usr/local/cuda root), so the build
+  # dies with "Could NOT find CUDAToolkit (missing: CUDAToolkit_INCLUDE_DIR)".
+  # Always prefer the official NVIDIA toolkit (network repo → /usr/local/cuda-1x.x);
+  # the distro toolkit is the last-resort fallback only.
+  install_official_cuda() {
+    local os_ver
+    os_ver="$(. /etc/os-release && echo "${VERSION_ID:-}" | cut -d. -f1-2)"
+    local repo
+    case "$os_ver" in
+      22.04|24.04) repo="ubuntu${os_ver/./}" ;;
+      *)
+        log_warn "OS version '$os_ver' not in the official NVIDIA repo map (ubuntu2204/2404)."
+        return 1
+        ;;
+    esac
+    log_info "No CUDA toolkit found — installing the official NVIDIA toolkit (multi-GB download)…"
+    retry 3 curl -fSL \
+      "https://developer.download.nvidia.com/compute/cuda/repos/$repo/x86_64/cuda-keyring_1.1-1_all.deb" \
+      -o /tmp/cuda-keyring.deb
+    sudo dpkg -i /tmp/cuda-keyring.deb
+    sudo apt-get update
+    # 12-8 matches the cudart bundle shipped by recent llama.cpp prebuilts.
+    retry 3 apt_install cuda-toolkit-12-8 \
+      || retry 2 apt_install cuda-toolkit-12-6 \
+      || retry 2 apt_install cuda-toolkit-12-4
+  }
+
+  find_local_cuda() {
+    local d
+    for d in /usr/local/cuda/bin /usr/local/cuda-*/bin; do
+      if [ -x "$d/nvcc" ]; then echo "$d"; return 0; fi
+    done
+    return 1
+  }
+
   local cuda_bin=""
-  for d in /usr/local/cuda/bin /usr/local/cuda-*/bin; do
-    [ -x "$d/nvcc" ] && cuda_bin="$d" && break
-  done
+  cuda_bin="$(find_local_cuda || true)"
+  if [ -z "$cuda_bin" ] && ! command -v nvcc >/dev/null 2>&1; then
+    install_official_cuda || {
+      log_warn "Official CUDA toolkit install failed — trying Ubuntu's distro toolkit (CMake may not find it)…"
+      apt_install nvidia-cuda-toolkit
+    }
+    cuda_bin="$(find_local_cuda || true)"
+  fi
   if [ -n "$cuda_bin" ]; then
     export PATH="$cuda_bin:$PATH"
     log_info "Using nvcc from $cuda_bin ($(nvcc --version | tail -1))"
-  elif ! command -v nvcc >/dev/null 2>&1; then
-    apt_install nvidia-cuda-toolkit
+  elif command -v nvcc >/dev/null 2>&1; then
+    log_info "Using nvcc from $(command -v nvcc)"
+  else
+    log_error "nvcc not found after CUDA toolkit installation — cannot build with CUDA."
+    exit 1
   fi
+
   # Fresh clone if needed (wipe leftovers from a failed prebuilt attempt).
   if [ ! -d "$LLAMA_DIR/.git" ]; then
     rm -rf "$LLAMA_DIR"
@@ -148,9 +193,16 @@ build_from_source() {
     cuda_arch="86;89;90"
     log_warn "Could not detect compute capability — using '$cuda_arch'."
   fi
+  # Pin the toolkit root for CMake so it reads headers/libs from the SAME
+  # toolkit as nvcc (works for both /usr/local/cuda-* and distro layouts).
+  local toolkit_flags=""
+  if [ -n "$cuda_bin" ]; then
+    toolkit_flags="-DCMAKE_CUDA_COMPILER=$cuda_bin/nvcc -DCUDAToolkit_ROOT=$(readlink -f "$(dirname "$cuda_bin")")"
+  fi
+  log_info "Configure flags: $toolkit_flags"
+  # shellcheck disable=SC2086  # toolkit flags are safe paths without spaces
   cmake -S "$LLAMA_DIR" -B "$LLAMA_DIR/build" -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_CUDA_ARCHITECTURES="$cuda_arch" \
-    ${cuda_bin:+-DCMAKE_CUDA_COMPILER="$cuda_bin/nvcc"}
+    -DCMAKE_CUDA_ARCHITECTURES="$cuda_arch" $toolkit_flags
   cmake --build "$LLAMA_DIR/build" --config Release -j"$(nproc)"
   sudo ln -sf "$LLAMA_DIR"/build/bin/llama-* /usr/local/bin/
 }
