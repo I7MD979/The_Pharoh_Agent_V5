@@ -138,9 +138,6 @@ build_from_source() {
         ;;
     esac
     log_info "No CUDA toolkit found — installing the official NVIDIA toolkit (multi-GB download)…"
-    # Purge any leftover distro toolkit first: its nvcc lives on /usr/bin and
-    # neither CMake nor our checks can tell it apart from a working toolkit.
-    sudo apt-get remove --purge -y nvidia-cuda-toolkit nvidia-cuda-dev >/dev/null 2>&1 || true
     retry 3 curl -fSL \
       "https://developer.download.nvidia.com/compute/cuda/repos/$repo/x86_64/cuda-keyring_1.1-1_all.deb" \
       -o /tmp/cuda-keyring.deb
@@ -162,21 +159,12 @@ build_from_source() {
 
   local cuda_bin=""
   cuda_bin="$(find_local_cuda || true)"
-  if [ -z "$cuda_bin" ]; then
-    # No /usr/local/cuda toolkit. ALWAYS try to install the official NVIDIA one,
-    # even if a distro nvcc already exists on PATH — a leftover distro-split
-    # toolkit (e.g. from a previous failed run) must never mask this check,
-    # because CMake cannot build against it ("CUDA Toolkit not found").
-    install_official_cuda || true
+  if [ -z "$cuda_bin" ] && ! command -v nvcc >/dev/null 2>&1; then
+    install_official_cuda || {
+      log_warn "Official CUDA toolkit install failed — trying Ubuntu's distro toolkit (CMake may not find it)…"
+      apt_install nvidia-cuda-toolkit
+    }
     cuda_bin="$(find_local_cuda || true)"
-    if [ -z "$cuda_bin" ]; then
-      if command -v nvcc >/dev/null 2>&1; then
-        log_warn "Official CUDA toolkit unavailable — trying the distro nvcc anyway (CMake may still fail)."
-      else
-        log_warn "Official CUDA toolkit install failed — installing Ubuntu's distro toolkit as last resort…"
-        apt_install nvidia-cuda-toolkit
-      fi
-    fi
   fi
   if [ -n "$cuda_bin" ]; then
     export PATH="$cuda_bin:$PATH"
@@ -213,14 +201,8 @@ build_from_source() {
   fi
   log_info "Configure flags: $toolkit_flags"
   # shellcheck disable=SC2086  # toolkit flags are safe paths without spaces
-  if ! cmake -S "$LLAMA_DIR" -B "$LLAMA_DIR/build" -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_CUDA_ARCHITECTURES="$cuda_arch" $toolkit_flags; then
-    log_error "CMake configure failed. The usual cause: no usable CUDA toolkit.
-  Fix: purge the distro toolkit and install the official one, then re-run this step:
-    sudo apt-get remove --purge -y nvidia-cuda-toolkit nvidia-cuda-dev
-    (re-run ./install.sh — it installs cuda-toolkit-12-8 from NVIDIA's official repo)"
-    exit 1
-  fi
+  cmake -S "$LLAMA_DIR" -B "$LLAMA_DIR/build" -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_CUDA_ARCHITECTURES="$cuda_arch" $toolkit_flags
   cmake --build "$LLAMA_DIR/build" --config Release -j"$(nproc)"
   sudo ln -sf "$LLAMA_DIR"/build/bin/llama-* /usr/local/bin/
 }
