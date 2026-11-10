@@ -14,7 +14,7 @@ if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1 || \
   log_info "Installing Node.js LTS (NodeSource)…"
   NODE_SETUP="$(mktemp)"
   curl -fsSL --retry 3 https://deb.nodesource.com/setup_22.x -o "$NODE_SETUP"
-  sudo -E bash "$NODE_SETUP"
+  sudo -H bash "$NODE_SETUP"
   rm -f "$NODE_SETUP"
   apt_install nodejs
 fi
@@ -52,6 +52,26 @@ log_ok "Wrote $OPENCODE_CONFIG_DIR/opencode.json"
 python3 -m json.tool "$OPENCODE_CONFIG_DIR/opencode.json" >/dev/null
 opencode --version
 
+# Record the exact binary: a second installation in ~/.opencode/bin or another
+# account can otherwise open a different CLI with different settings.
+OPENCODE_BIN="$(command -v opencode)"
+LAUNCHER="$(mktemp)"
+sed -e "s|__STACK_USER__|$STACK_USER|g" \
+    -e "s|__STACK_HOME__|$STACK_HOME|g" \
+    -e "s|__OPENCODE_BIN__|$OPENCODE_BIN|g" \
+    "$REPO_ROOT/scripts/pharaoh.sh" > "$LAUNCHER"
+sudo install -m 0755 "$LAUNCHER" /usr/local/bin/pharaoh
+rm -f "$LAUNCHER"
+log_ok "Installed launcher: pharaoh (account=$STACK_USER, binary=$OPENCODE_BIN)"
+
+log_info "Checking that OpenCode discovers the local model…"
+MODELS_OUTPUT="$(timeout 60 opencode models local 2>&1)" || {
+  log_error "OpenCode could not load the local provider: $MODELS_OUTPUT"; exit 1; }
+if ! grep -Fxq "local/$MODEL_ALIAS" <<<"$MODELS_OUTPUT"; then
+  log_error "Local model is missing from OpenCode's catalog: $MODELS_OUTPUT"
+  exit 1
+fi
+
 # sanity: the bridge daemon must exist (serves MCP over streamable-http) and
 # the HexStrike entry point it wraps must be present.
 [ -f "$HEXSTRIKE_DIR/hexstrike_mcp.py" ] || \
@@ -64,3 +84,4 @@ else
 fi
 
 log_ok "opencode is configured: model=local/$MODEL_ALIAS, mcp=hexstrike (remote @ :$HEXSTRIKE_MCP_BRIDGE_PORT)"
+log_info "Start with 'pharaoh' to use the installed account/config and avoid managed-server port conflicts."

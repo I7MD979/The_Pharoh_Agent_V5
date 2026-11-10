@@ -23,7 +23,9 @@ log_ok "API, inference, tools, MCP execution and watchdog checks passed."
 cd "$STACK_HOME"
 AGENT_OUTPUT="$(mktemp)"
 trap 'rm -f "$AGENT_OUTPUT"' EXIT
-if ! timeout 600 opencode run --format json "Reply with exactly OK. Do not use tools." > "$AGENT_OUTPUT"; then
+PRIVATE_FLAGS=()
+if opencode run --help 2>&1 | grep -q -- '--standalone'; then PRIVATE_FLAGS+=(--standalone); fi
+if ! timeout 600 opencode run "${PRIVATE_FLAGS[@]}" --model "local/$MODEL_ALIAS" --format json "Reply with exactly OK. Do not use tools." > "$AGENT_OUTPUT"; then
   cat "$AGENT_OUTPUT"
   log_error "OpenCode could not complete a local model request."
   exit 1

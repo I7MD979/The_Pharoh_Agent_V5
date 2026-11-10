@@ -60,7 +60,7 @@ if [ "${#TO_INSTALL[@]}" -gt 0 ]; then
   # One unknown package name aborts the WHOLE apt-get install — filter first.
   AVAILABLE=()
   for p in "${TO_INSTALL[@]}"; do
-    if apt-cache show "$p" >/dev/null 2>&1; then
+    if pkg_available "$p"; then
       AVAILABLE+=("$p")
     else
       log_warn "Package not in apt repos, skipping: $p"

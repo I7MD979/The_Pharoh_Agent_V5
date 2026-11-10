@@ -20,7 +20,7 @@ export PATH="/usr/local/bin:$STACK_HOME/.local/bin:$STACK_HOME/.opencode/bin:/sn
 if [ "$(id -u)" -eq 0 ]; then
   sudo() {
     [ "${1:-}" = -v ] && return 0
-    [ "${1:-}" = -E ] && shift
+    case "${1:-}" in -E|-H) shift ;; esac
     "$@"
   }
 fi
@@ -76,6 +76,22 @@ apt_install() {
   sudo env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=180 install -y --no-install-recommends "$@"
 }
 
+pkg_available() {
+  local candidate
+  candidate="$(LC_ALL=C apt-cache policy "$1" | sed -n 's/^[[:space:]]*Candidate: //p')"
+  [ -n "$candidate" ] && [ "$candidate" != '(none)' ]
+}
+
+ensure_python311() {
+  if ! command -v python3.11 >/dev/null 2>&1; then
+    if ! pkg_available python3.11; then
+      sudo add-apt-repository -y ppa:deadsnakes/ppa || return 1
+      sudo apt-get update || return 1
+    fi
+  fi
+  apt_install python3.11 python3.11-venv python3.11-dev
+}
+
 bootstrap() {
   require_ubuntu_2204 || return 1
   sudo -v || return 1
@@ -86,21 +102,14 @@ bootstrap() {
 # Each CLI gets its own environment so incompatible dependency pins cannot
 # break other tools or Ubuntu's Python packages.
 install_python_cli() {
-  local name="$1" spec="$2" venv="/opt/pharaoh-venvs/$1" target entries
+  local name="$1" spec="$2" venv="/opt/pharaoh-venvs/$1" target entries helper
+  helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/python_cli_entries.py"
   sudo mkdir -p /opt/pharaoh-venvs || return 1
   sudo python3 -m venv "$venv" || return 1
   sudo "$venv/bin/python" -m pip install --upgrade pip || return 1
   sudo "$venv/bin/python" -m pip install --upgrade "$spec" || return 1
   sudo "$venv/bin/python" -m pip check || return 1
-  entries="$(sudo "$venv/bin/python" - "$name" <<'PY'
-from importlib.metadata import distribution
-import sys
-name = {'scout-suite': 'ScoutSuite'}.get(sys.argv[1], sys.argv[1])
-for entry in distribution(name).entry_points:
-    if entry.group == 'console_scripts':
-        print(entry.name)
-PY
-)" || return 1
+  entries="$(sudo "$venv/bin/python" "$helper" "$name")" || return 1
   [ -n "$entries" ] || { log_error "No CLI entry points installed for $name"; return 1; }
   while IFS= read -r target; do
     # Keep the HTTPX Python client's entry point away from ProjectDiscovery httpx.

@@ -29,7 +29,11 @@ log_info "Detailed tool log: $TOOLS_LOG"
 
 FAILS=()
 ok()   { log_ok "$*"; }
-bad()  { log_error "$*"; FAILS+=("$*"); }
+bad()  {
+  log_error "$*"; FAILS+=("$*")
+  log_info "Recent tool log ($TOOLS_LOG):"
+  tail -n 18 "$TOOLS_LOG" >&2
+}
 have() {
   command -v "$1" >/dev/null 2>&1 || return 1
   # The Python HTTP client has the same command name as ProjectDiscovery httpx.
@@ -45,11 +49,13 @@ gh_asset() {
         | jq -r '.assets[].browser_download_url' | grep -E "$pattern" | head -1)"
   [ -n "$url" ] || { bad "$name: no matching release asset for $repo"; return 1; }
   tmp="$(mktemp -d)"
+  mkdir -p "$tmp/x" || { bad "$name: staging failed"; return 1; }
   log_info "Downloading $name from $url"
   if ! curl -fsSL --retry 3 "$url" -o "$tmp/asset"; then bad "$name: download failed"; rm -rf "$tmp"; return 1; fi
   case "$url" in
     *.zip)     unzip -qo "$tmp/asset" -d "$tmp/x" || { bad "$name: extraction failed"; rm -rf "$tmp"; return 1; } ;;
     *.tar.gz|*.tgz) mkdir -p "$tmp/x" && tar xzf "$tmp/asset" -C "$tmp/x" || { bad "$name: extraction failed"; rm -rf "$tmp"; return 1; } ;;
+    *.gz) gzip -dc "$tmp/asset" > "$tmp/x/$name" || { bad "$name: gzip extraction failed"; rm -rf "$tmp"; return 1; } ;;
     *.deb)     sudo dpkg -i "$tmp/asset" >>"$TOOLS_LOG" 2>&1 || sudo apt-get -f install -y ;;
     *)         mkdir -p "$tmp/x" && cp "$tmp/asset" "$tmp/x/$name" ;;
   esac
@@ -85,16 +91,16 @@ APT_PKGS=(
   aircrack-ng amass arp-scan autopsy binwalk bulk-extractor checksec
   dirsearch dnsenum dotdotpwn enum4linux exploitdb foremost hashcat
   hashcat-utils hash-identifier hashpump httpie kismet medusa
-  metasploit-framework nbtscan ophcrack-cli outguess patator radare2
+  metasploit-framework nbtscan ophcrack-cli outguess patator
   recon-ng responder ruby-full samba-client scalpel sleuthkit smbmap
   steghide testdisk theharvester tshark wireshark-common wfuzz wpscan
   xsser zaproxy commix libimage-exiftool-perl default-jre-headless
   ruby-dev build-essential libssl-dev libcurl4-openssl-dev libxml2-dev
-  libxslt1-dev zlib1g-dev perl libkrb5-dev libgmp-dev
+  libxslt1-dev zlib1g-dev perl libkrb5-dev libgmp-dev libreadline-dev libffi-dev
 )
 AVAIL=()
 for p in "${APT_PKGS[@]}"; do
-  if apt-cache show "$p" >>"$TOOLS_LOG" 2>&1; then AVAIL+=("$p"); else log_warn "no apt package: $p"; fi
+  if pkg_available "$p"; then AVAIL+=("$p"); else log_info "No apt candidate; using other installation methods where configured: $p"; fi
 done
 if apt_install "${AVAIL[@]}"; then
   ok "apt batch installed (${#AVAIL[@]} packages)"
@@ -156,7 +162,7 @@ log_banner "5/7 GitHub release binaries"
 gh_asset "epi052/feroxbuster"      'x86_64-linux-feroxbuster\.zip$' feroxbuster || true
 # rustscan's latest releases ship no assets — pin the last one that does
 gh_asset "RustScan/RustScan"       '_amd64\.deb$'           rustscan "tags/2.2.2" || true
-gh_asset "Sh1Yo/x8"                'x86_64.*linux.*\.tar\.gz$' x8 || true
+gh_asset "Sh1Yo/x8"                '/x86_64-linux-x8\.gz$' x8 || true
 gh_asset "io12/pwninit"            '/pwninit$'              pwninit || true
 gh_asset "tenable/terrascan"       'Linux_x86_64\.tar\.gz$' terrascan || true
 gh_asset "aquasecurity/kube-bench" 'linux_amd64\.tar\.gz$'  kube-bench || true
@@ -251,12 +257,26 @@ if ! have zaproxy && ! have zap.sh; then
   fi
 fi
 
-# gems needing build tools (installed in stage 1): wpscan, evil-winrm
-for g in wpscan evil-winrm; do
+# wpscan uses the regular gem installation. Evil-WinRM needs a resolved bundle:
+# Jammy's Ruby can be incompatible with the newest unconstrained transitive gems.
+for g in wpscan; do
   have "${g//_/-}" && continue
   log_info "gem install $g"
   sudo gem install "$g" --no-document >>"$TOOLS_LOG" 2>&1 && ok "gem: $g" || bad "gem: $g"
 done
+
+install_evil_winrm() {
+  local dest=/opt/pharaoh-gems/evil-winrm
+  sudo gem install bundler --version 2.4.22 --no-document || return 1
+  sudo mkdir -p "$dest" || return 1
+  printf 'source "https://rubygems.org"\nruby "%s"\ngem "evil-winrm", ">= 3.7", "< 5"\n' "$(ruby -e 'print RUBY_VERSION')" \
+    | sudo tee "$dest/Gemfile" >/dev/null || return 1
+  sudo env BUNDLE_GEMFILE="$dest/Gemfile" BUNDLE_PATH="$dest/vendor" \
+    bundle _2.4.22_ install --jobs 4 --retry 3 || return 1
+  sudo install -m 0755 "$(dirname "${BASH_SOURCE[0]}")/evil_winrm_wrapper.sh" /usr/local/bin/evil-winrm || return 1
+  /usr/local/bin/evil-winrm --help >/dev/null
+}
+if install_evil_winrm >>"$TOOLS_LOG" 2>&1; then ok 'evil-winrm (resolved Ruby bundle)'; else bad 'evil-winrm (see tool log)'; fi
 
 # netexec — not on PyPI; requires Python >= 3.11 (jammy ships 3.10), so give it
 # its own python3.11 venv and install from git. python3.11-dev is required
@@ -284,14 +304,32 @@ fi
 declare -A GIT_PIP=(
   [scout-suite]="git+https://github.com/nccgroup/ScoutSuite.git"
   [autorecon]="git+https://github.com/Tib3rius/AutoRecon.git"
-  # theHarvester master needs Python >= 3.14; 4.4.4 is the last 3.10-compatible release
-  [theHarvester]="git+https://github.com/laramies/theHarvester.git@4.4.4"
 )
 for p in "${!GIT_PIP[@]}"; do
   have "$(echo "$p" | tr 'A-Z' 'a-z')" && continue
   log_info "pip install $p (from git)"
   install_python_cli "$p" "${GIT_PIP[$p]}" >>"$TOOLS_LOG" 2>&1 && ok "pip: $p" || bad "pip: $p (git)"
 done
+
+# This release's setup.py omits its runtime requirements. Install the upstream
+# requirements explicitly and launch from its checkout, including data files.
+install_theharvester() {
+  local dest=/opt/theHarvester
+  ensure_python311 || return 1
+  if [ ! -d "$dest/.git" ]; then
+    sudo git clone --depth 1 --branch 4.4.4 https://github.com/laramies/theHarvester.git "$dest" || return 1
+  fi
+  [ -f "$dest/requirements/base.txt" ] || return 1
+  sudo python3.11 -m venv "$dest/venv" || return 1
+  sudo "$dest/venv/bin/python" -m pip install --upgrade pip wheel || return 1
+  sudo "$dest/venv/bin/python" -m pip install -r "$dest/requirements/base.txt" || return 1
+  sudo "$dest/venv/bin/python" -m pip check || return 1
+  printf '#!/bin/bash\ncd /opt/theHarvester || exit 1\nexport PYTHONPATH=/opt/theHarvester\nexec /opt/theHarvester/venv/bin/python /opt/theHarvester/bin/theHarvester "$@"\n' \
+    | sudo tee /usr/local/bin/theHarvester >/dev/null || return 1
+  sudo chmod +x /usr/local/bin/theHarvester || return 1
+  /usr/local/bin/theHarvester --help >/dev/null
+}
+if install_theharvester >>"$TOOLS_LOG" 2>&1; then ok 'theHarvester'; else bad 'theHarvester (see tool log)'; fi
 
 # prowler — apt's wfuzz ships metadata modern pip cannot parse; keep wfuzz, take prowler
 have prowler || { install_python_cli prowler prowler >>"$TOOLS_LOG" 2>&1 \
