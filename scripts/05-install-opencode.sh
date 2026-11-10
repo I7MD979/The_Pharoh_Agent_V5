@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Step 5 — install opencode and wire it to the local Qwen3.8 agentic model
-# (OpenAI-compatible on :8000) + HexStrike MCP (stdio bridge to :8888).
+# (OpenAI-compatible on :8000) + HexStrike MCP (remote streamable-http bridge daemon).
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
@@ -34,13 +34,20 @@ log_ok "opencode: $(command -v opencode)"
 # --- config --------------------------------------------------------------------
 mkdir -p "$OPENCODE_CONFIG_DIR"
 sed -e "s|__HEXSTRIKE_DIR__|$HEXSTRIKE_DIR|g" \
+    -e "s|__HEXSTRIKE_MCP_BRIDGE_PORT__|$HEXSTRIKE_MCP_BRIDGE_PORT|g" \
     -e "s|__MODEL_ALIAS__|$MODEL_ALIAS|g" \
     "$REPO_ROOT/config/opencode.json" > "$OPENCODE_CONFIG_DIR/opencode.json"
 log_ok "Wrote $OPENCODE_CONFIG_DIR/opencode.json"
-cat "$OPENCODE_CONFIG_DIR/opencode.json"
 
-# sanity: the stdio bridge entry point must exist
+# sanity: the bridge daemon must exist (serves MCP over streamable-http) and
+# the HexStrike entry point it wraps must be present.
 [ -f "$HEXSTRIKE_DIR/hexstrike_mcp.py" ] || \
   log_warn "hexstrike_mcp.py not found — check the HexStrike repo layout; adjust 'mcp' in opencode.json if its README uses a different entry point."
 
-log_ok "opencode is configured: model=local/$MODEL_ALIAS, mcp=hexstrike"
+if bash -c "</dev/tcp/127.0.0.1/$HEXSTRIKE_MCP_BRIDGE_PORT" 2>/dev/null; then
+  log_ok "MCP bridge is listening on http://127.0.0.1:$HEXSTRIKE_MCP_BRIDGE_PORT/mcp"
+else
+  log_warn "MCP bridge not reachable on :$HEXSTRIKE_MCP_BRIDGE_PORT yet ($(systemctl is-active hexstrike-bridge 2>/dev/null || echo 'service not installed?')). Re-run step 4 to install it."
+fi
+
+log_ok "opencode is configured: model=local/$MODEL_ALIAS, mcp=hexstrike (remote @ :$HEXSTRIKE_MCP_BRIDGE_PORT)"

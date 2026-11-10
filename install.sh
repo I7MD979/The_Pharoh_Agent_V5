@@ -44,6 +44,6 @@ run_step 7 07-verify.sh
 
 log_banner "INSTALL COMPLETE"
 log_ok "llama.cpp   → http://localhost:8000  (model: $MODEL_ALIAS)"
-log_ok "HexStrike   → http://localhost:8888  (MCP via stdio bridge)"
+log_ok "HexStrike   → http://localhost:8888  (MCP bridge: streamable-http on :$HEXSTRIKE_MCP_BRIDGE_PORT)"
 log_ok "opencode    → run 'opencode' to start the agent"
 log_info "Manage with: ./start-stack.sh / ./stop-stack.sh"

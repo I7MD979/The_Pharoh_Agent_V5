@@ -10,19 +10,34 @@ A fully local, self-hosted AI pentesting stack for **Ubuntu 22.04** with an NVID
 │  opencode   │ ──────────────► │ llama.cpp  (llama-server)     │
 │  (agent CLI)│  localhost:8000 │ Qwen3.8-27B-abliterated       │
 │             │                 │ (GGUF Q8_0, xhigh reasoning)  │
-│             │   MCP (stdio)   └──────────────────────────────┘
+│             │                 └──────────────────────────────┘
+│             │  MCP (remote,
+│             │  stateless HTTP)
 │             │ ──────────────► ┌──────────────────────────────┐
-└─────────────┘                 │ HexStrike AI (MCP tools)      │
-                                │ hexstrike_server.py  :8888    │
-                                │ nmap · nuclei · sqlmap · ...  │
-                                └──────────────────────────────┘
+└─────────────┘                 │ hexstrike-bridge (systemd)    │
+            127.0.0.1:8890/mcp  │ streamable-http MCP daemon    │
+                                └──────────────┬───────────────┘
+                                               │ HTTP
+                                       ┌───────▼──────────────────┐
+                                       │ HexStrike AI (tools API)  │
+                                       │ hexstrike_server.py :8888 │
+                                       │ nmap · nuclei · sqlmap …  │
+                                       └───────────────────────────┘
 ```
 
-| Component    | What it is                                                        | Port / transport          |
-| ------------ | ----------------------------------------------------------------- | ------------------------- |
-| llama.cpp    | Serves the Qwen3.8-27B Abliterated Q8_0 GGUF, OpenAI-compatible  | `0.0.0.0:8000` (HTTP)     |
-| HexStrike AI | MCP security-tools server (nmap, nuclei, sqlmap, gobuster, …)     | `0.0.0.0:8888` (HTTP API) |
-| opencode     | Terminal AI agent wired to the local model + HexStrike MCP tools  | MCP over stdio            |
+| Component           | What it is                                                        | Port / transport          |
+| ------------------- | ----------------------------------------------------------------- | ------------------------- |
+| llama.cpp           | Serves the Qwen3.8-27B Abliterated Q8_0 GGUF, OpenAI-compatible  | `0.0.0.0:8000` (HTTP)     |
+| HexStrike AI        | Security-tools API server (nmap, nuclei, sqlmap, gobuster, …)     | `0.0.0.0:8888` (HTTP API) |
+| hexstrike-bridge    | Long-lived MCP daemon (`hexstrike_mcp.py`, streamable-http)       | `127.0.0.1:8890` (MCP)    |
+| opencode            | Terminal AI agent wired to the local model + HexStrike MCP tools  | MCP over HTTP (`remote`)  |
+
+**Why a bridge daemon instead of stdio?** With the stock setup, opencode spawned
+`hexstrike_mcp.py` as a stdio child over one shared pipe. A single interrupt mid-tool
+poisoned that pipe's state, and every later tool call hung forever (the "spinner for
+20 minutes" failure). The bridge daemon serves one stateless HTTP request per tool
+call, survives agent restarts, auto-recovers via systemd (`Restart=always`), and is
+health-checkable with plain `curl`.
 
 The selected model is built for **agentic planning and execution**, native tool calling,
 and long multi-step tasks. Thinking is explicitly enabled at **xhigh** depth, and reasoning
@@ -56,9 +71,12 @@ your login user/home and generates the systemd units from `systemd/*.service` te
 4. `scripts/04-install-hexstrike.sh` — clones `netcuter/Hexstrike-AI` into `~/Hexstrike-AI`,
    creates its venv, installs Python requirements and the security tools
    (nmap, nuclei, sqlmap, gobuster, …), patches the MCP bridge request timeout
-   (300 s → 1800 s), installs + enables the `hexstrike` service.
+   (300 s → 1800 s), patches `hexstrike_mcp.py` from stdio to **streamable-http on :8890**
+   (backup kept as `hexstrike_mcp.py.bak`), then installs + enables both the `hexstrike`
+   service (:8888) and the `hexstrike-bridge` MCP daemon (:8890).
 5. `scripts/05-install-opencode.sh` — installs Node.js + `opencode-ai`, writes
-   `~/.config/opencode/opencode.json` (local provider on port 8000 + HexStrike MCP over stdio,
+   `~/.config/opencode/opencode.json` (local provider on port 8000 + HexStrike MCP as a
+   **remote** connection to the bridge on `127.0.0.1:8890/mcp`,
    with a 1-hour MCP request timeout for long scans).
 6. `scripts/06-install-all-tools.sh` — installs the **full** HexStrike toolset (~120 tools):
    apt packages, Go tools, pip CLIs, Ruby gems, GitHub release binaries (feroxbuster,
@@ -70,14 +88,15 @@ your login user/home and generates the systemd units from `systemd/*.service` te
 ## Managing the stack
 
 ```bash
-./start-stack.sh        # systemctl start llama-cyberstrike + hexstrike
-./stop-stack.sh         # stop both
-sudo systemctl status llama-cyberstrike hexstrike
+./start-stack.sh        # systemctl start llama-cyberstrike + hexstrike + hexstrike-bridge
+./stop-stack.sh         # stop all three
+sudo systemctl status llama-cyberstrike hexstrike hexstrike-bridge
 journalctl -u llama-cyberstrike -f      # model server logs
 journalctl -u hexstrike -f              # tools server logs
+journalctl -u hexstrike-bridge -f       # MCP bridge logs (CallToolRequest per tool call)
 ```
 
-Both services auto-start on boot and restart on failure. The historical service name
+All services auto-start on boot and restart on failure (`Restart=always` on the bridge). The historical service name
 `llama-cyberstrike` is retained for compatibility; it now serves Qwen3.8.
 
 ## Using the agent
@@ -134,7 +153,10 @@ To change the default downloaded model in the installer, update `HF_REPO` and
 | `GLIBC_2.38 not found` from prebuilt binary    | Current llama.cpp prebuilts may target Ubuntu 24.04; step 1 detects this and falls back to source |
 | nvcc fails with `cannot execute cc1plus`       | gcc/g++ version skew: `sudo apt install g++-$(gcc -dumpversion)` — step 1 does this automatically |
 | **Model 404** at `/v1/chat/completions`        | The API alias is `pharaoh-agent`; keep `--alias pharaoh-agent` in the systemd unit            |
-| **MCP not connecting** in opencode             | Check `systemctl status hexstrike`, then `curl localhost:8888/health`; opencode uses the stdio bridge |
+| **MCP not connecting** in opencode             | Check `systemctl status hexstrike-bridge`, then the handshake: `curl -sS -X POST http://127.0.0.1:8890/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}' — must contain `hexstrike-ai-mcp` |
+| Agent hangs on a tool call with no bridge activity | That is model generation time (local LLM thinking), not the bridge. Confirm with `journalctl -u hexstrike-bridge -n 6` (look for a fresh `CallToolRequest`) and llama-server slots |
+| Bridge wedges mid-session                       | `sudo systemctl restart hexstrike-bridge` — opencode reconnects automatically on the next tool call (stateless HTTP, no poisoned-pipe state) |
+| Environment wire list check                     | Bridge is bound to `127.0.0.1` only — never expose :8890; if remote access is needed use an SSH tunnel |
 | Hugging Face download stalls                   | Re-run step 2 — the Hugging Face CLI resumes partial downloads                                |
 | `opencode` not found                           | Ensure npm global bin is on PATH: `npm config get prefix` → add `<prefix>/bin` to `~/.bashrc`  |
 | Chat API returns **empty `content`**           | Reasoning consumes tokens first. Give it enough `max_tokens` (≥512 for smoke tests; much more for real tasks) |
@@ -149,7 +171,8 @@ To change the default downloaded model in the installer, update `HF_REPO` and
 ├── config/opencode.json        # opencode provider + MCP config template
 ├── systemd/                    # unit templates (user/home substituted at install)
 │   ├── llama-cyberstrike.service
-│   └── hexstrike.service
+│   ├── hexstrike.service
+│   └── hexstrike-bridge.service
 └── scripts/
     ├── common.sh               # model identity + logging + shared helpers
     ├── 01-install-llamacpp.sh

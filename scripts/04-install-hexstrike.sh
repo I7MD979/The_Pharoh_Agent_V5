@@ -84,16 +84,39 @@ if ! command -v nuclei >/dev/null 2>&1; then
 fi
 
 # --- patch MCP bridge timeouts --------------------------------------------------
-# The MCP bridge (hexstrike_mcp.py, spawned by opencode per session) hard-codes
-# a 300 s HTTP timeout per request to the HexStrike server. Real scans (nuclei,
-# full vulnerability assessments) routinely exceed that → "Timed out, retry."
-# Raise it to 30 minutes. Idempotent: only touches the stock default.
+# The MCP bridge (hexstrike_mcp.py) hard-codes a 300 s HTTP timeout per request
+# to the HexStrike server. Real scans (nuclei, full vulnerability assessments)
+# routinely exceed that → "Timed out, retry." Raise it to 30 minutes. Idempotent:
+# only touches the stock default.
 if grep -q '^DEFAULT_REQUEST_TIMEOUT = 300' "$HEXSTRIKE_DIR/hexstrike_mcp.py"; then
   sed -i 's/^DEFAULT_REQUEST_TIMEOUT = 300/DEFAULT_REQUEST_TIMEOUT = 1800/' \
     "$HEXSTRIKE_DIR/hexstrike_mcp.py"
   log_ok "Patched hexstrike_mcp.py: request timeout 300s → 1800s"
 else
   log_info "hexstrike_mcp.py timeout already patched (or upstream changed) — skipping."
+fi
+
+# --- convert MCP bridge from stdio to streamable-http ----------------------------
+# Stock hexstrike_mcp.py runs `mcp.run()` with no transport => stdio. opencode
+# then owns a long-lived child process over one shared pipe; a single interrupt
+# mid-tool corrupts the pipe state and every later request hangs forever.
+# Patch it to serve streamable-http on the bridge port instead, as a systemd
+# daemon (see hexstrike-bridge.service). Idempotent + keeps a .bak backup.
+if ! grep -q 'transport="streamable-http"' "$HEXSTRIKE_DIR/hexstrike_mcp.py"; then
+  [ -f "$HEXSTRIKE_DIR/hexstrike_mcp.py.bak" ] || \
+    cp "$HEXSTRIKE_DIR/hexstrike_mcp.py" "$HEXSTRIKE_DIR/hexstrike_mcp.py.bak"
+  sed -i "s|FastMCP(\"hexstrike-ai-mcp\")|FastMCP(\"hexstrike-ai-mcp\", host=\"127.0.0.1\", port=$HEXSTRIKE_MCP_BRIDGE_PORT)|" \
+    "$HEXSTRIKE_DIR/hexstrike_mcp.py"
+  sed -i 's|mcp\.run()|mcp.run(transport="streamable-http")|' \
+    "$HEXSTRIKE_DIR/hexstrike_mcp.py"
+  if grep -q 'transport="streamable-http"' "$HEXSTRIKE_DIR/hexstrike_mcp.py"; then
+    log_ok "Patched hexstrike_mcp.py: stdio → streamable-http on :$HEXSTRIKE_MCP_BRIDGE_PORT (backup: hexstrike_mcp.py.bak)"
+  else
+    log_error "streamable-http patch failed — upstream hexstrike_mcp.py layout changed. Inspect $HEXSTRIKE_DIR/hexstrike_mcp.py manually."
+    exit 1
+  fi
+else
+  log_info "hexstrike_mcp.py already runs streamable-http — skipping patch."
 fi
 
 # --- systemd service ------------------------------------------------------------
@@ -129,3 +152,35 @@ for t in nmap nuclei sqlmap; do
 done
 
 log_ok "HexStrike AI server is running on http://0.0.0.0:$HEXSTRIKE_PORT"
+
+# --- MCP bridge systemd service (streamable-http on :8890) -------------------------
+# opencode connects to this URL as `type: remote` — no more stdio child process.
+log_info "Generating hexstrike-bridge systemd unit…"
+sed -e "s|__STACK_USER__|$STACK_USER|g" \
+    -e "s|__HEXSTRIKE_DIR__|$HEXSTRIKE_DIR|g" \
+    "$REPO_ROOT/systemd/hexstrike-bridge.service" \
+  | sudo tee /etc/systemd/system/hexstrike-bridge.service >/dev/null
+
+sudo systemctl daemon-reload
+sudo systemctl enable hexstrike-bridge
+sudo systemctl restart hexstrike-bridge
+
+log_info "Waiting for the MCP bridge on :$HEXSTRIKE_MCP_BRIDGE_PORT…"
+for i in $(seq 1 12); do
+  systemctl is-active --quiet hexstrike-bridge || {
+    log_error "hexstrike-bridge service died. Recent logs:"
+    sudo journalctl -u hexstrike-bridge -n 40 --no-pager; exit 1; }
+  BRIDGE_RESP="$(curl -fsS -m 10 -X POST "http://127.0.0.1:$HEXSTRIKE_MCP_BRIDGE_PORT/mcp" \
+    -H 'Content-Type: application/json' \
+    -H 'Accept: application/json, text/event-stream' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"install-check","version":"0"}}}' 2>/dev/null || true)"
+  echo "$BRIDGE_RESP" | grep -q 'hexstrike-ai-mcp' && break
+  sleep 3
+done
+
+if echo "$BRIDGE_RESP" | grep -q 'hexstrike-ai-mcp'; then
+  log_ok "MCP bridge handshake OK on http://127.0.0.1:$HEXSTRIKE_MCP_BRIDGE_PORT/mcp"
+else
+  log_error "MCP bridge did not answer the MCP handshake on :$HEXSTRIKE_MCP_BRIDGE_PORT. Check: journalctl -u hexstrike-bridge"
+  exit 1
+fi

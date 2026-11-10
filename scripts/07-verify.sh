@@ -56,6 +56,19 @@ for t in nmap nuclei sqlmap; do
 done
 check "HexStrike exposes nmap / nuclei / sqlmap" $HEX_OK
 
+# --- 2b. MCP bridge (streamable-http on :8890) --------------------------------------
+systemctl is-active --quiet hexstrike-bridge || sudo systemctl start hexstrike-bridge
+BRIDGE_ACTIVE=1; systemctl is-active --quiet hexstrike-bridge && BRIDGE_ACTIVE=0
+check "hexstrike-bridge systemd service is active" $BRIDGE_ACTIVE
+
+BRIDGE_HANDSHAKE=1
+BRIDGE_RESP="$(curl -fsS -m 10 -X POST "http://127.0.0.1:$HEXSTRIKE_MCP_BRIDGE_PORT/mcp" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"verify-check","version":"0"}}}' 2>/dev/null || true)"
+echo "$BRIDGE_RESP" | grep -q 'hexstrike-ai-mcp' && BRIDGE_HANDSHAKE=0
+check "MCP bridge handshake on :$HEXSTRIKE_MCP_BRIDGE_PORT" $BRIDGE_HANDSHAKE
+
 # --- 3. opencode MCP listing -------------------------------------------------------
 log_banner "3/4 opencode MCP tool listing"
 NPM_PREFIX="$(npm config get prefix 2>/dev/null || true)"

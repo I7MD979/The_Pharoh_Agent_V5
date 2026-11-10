@@ -17,6 +17,9 @@ OPENCODE_CONFIG_DIR="$STACK_HOME/.config/opencode"
 
 LLAMA_PORT=8000
 HEXSTRIKE_PORT=8888
+# Streamable-HTTP MCP bridge (hexstrike-bridge systemd service) — replaces the
+# per-session stdio spawn. Long-lived daemon => no poisoned-pipe hangs.
+HEXSTRIKE_MCP_BRIDGE_PORT=8890
 
 HF_REPO="huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF"
 MODEL_FILENAME="Huihui-Qwen3.8-27B-abliterated-Q8_0.gguf"

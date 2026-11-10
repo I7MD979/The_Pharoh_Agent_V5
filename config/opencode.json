@@ -11,8 +11,8 @@
   "model": "local/__MODEL_ALIAS__",
   "mcp": {
     "hexstrike": {
-      "type": "local",
-      "command": ["__HEXSTRIKE_DIR__/venv/bin/python3", "__HEXSTRIKE_DIR__/hexstrike_mcp.py", "--server", "http://localhost:8888"],
+      "type": "remote",
+      "url": "http://127.0.0.1:__HEXSTRIKE_MCP_BRIDGE_PORT__/mcp",
       "enabled": true,
       "timeout": 3600000
     }
