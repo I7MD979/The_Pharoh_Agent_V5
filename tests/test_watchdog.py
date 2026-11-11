@@ -51,6 +51,24 @@ class WatchdogTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 w.progress(slots)
 
+    def test_slot_token_list_is_supported(self):
+        slots = [{'id': 0, 'id_task': 7, 'is_processing': True,
+                  'next_token': [{'n_decoded': 13}]}]
+        self.assertEqual(w.progress(slots), [[0, 7, None, None, [13]]])
+
+    def test_unknown_slot_schema_cannot_trigger_restart(self):
+        props = 'ActiveState=active\nInvocationID=test\nActiveEnterTimestampMonotonic=0'
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(w.os.environ, {'STATE_DIRECTORY': directory}), \
+                patch.object(w.time, 'monotonic', return_value=1000), \
+                patch.object(w, 'command', return_value=props), \
+                patch.object(w.subprocess, 'run') as run:
+            for _ in range(3):
+                with patch.object(w, 'request', side_effect=[{'status': 'ok'},
+                                  [{'is_processing': True, 'next_token': []}]]):
+                    w.main()
+            run.assert_not_called()
+
     @patch.object(w, 'request')
     @patch.object(w, 'command', return_value='ActiveState=inactive')
     def test_manually_stopped_service_stays_stopped(self, command, request):

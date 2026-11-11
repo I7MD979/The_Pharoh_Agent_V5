@@ -12,6 +12,10 @@ BASE = 'http://127.0.0.1:8000'
 HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
+class UnsupportedTelemetry(ValueError):
+    pass
+
+
 def request(path, payload=None, timeout=10):
     data = None if payload is None else json.dumps(payload).encode()
     req = urllib.request.Request(BASE + path, data=data,
@@ -21,12 +25,26 @@ def request(path, payload=None, timeout=10):
 
 
 def progress(slots):
-    if not isinstance(slots, list) or not slots:
-        raise ValueError('Invalid /slots response')
-    return [[s.get('id'), s.get('id_task'), s.get('n_past'),
-             s.get('n_prompt_tokens_processed'),
-             s.get('next_token', {}).get('n_decoded')]
-            for s in slots if s.get('is_processing')]
+    if not isinstance(slots, list) or not slots or any(
+            not isinstance(slot, dict) or not isinstance(slot.get('is_processing'), bool)
+            for slot in slots):
+        raise UnsupportedTelemetry('Invalid /slots response')
+    active = []
+    for slot in slots:
+        if not slot['is_processing']:
+            continue
+        token = slot.get('next_token')
+        if isinstance(token, list):
+            decoded = [item.get('n_decoded') for item in token if isinstance(item, dict)]
+            decoded = decoded if any(isinstance(n, int) for n in decoded) else None
+        else:
+            decoded = token.get('n_decoded') if isinstance(token, dict) else None
+        past = slot.get('n_past')
+        prompt = slot.get('n_prompt_tokens_processed')
+        if not any(isinstance(n, (int, list)) for n in (past, prompt, decoded)):
+            raise UnsupportedTelemetry('Busy slot has no readable progress counters')
+        active.append([slot.get('id'), slot.get('id_task'), past, prompt, decoded])
+    return active
 
 
 def assess(state, now, fingerprint, probe_ok=True, stall_seconds=1800):
@@ -81,28 +99,40 @@ def main():
     invocation = props.get('InvocationID')
     if state.get('invocation') != invocation:
         state = {'invocation': invocation}
+    stall_seconds = int(os.environ.get('STALL_SECONDS', '1800'))
+    probe_timeout = int(os.environ.get('PROBE_TIMEOUT_SECONDS', '120'))
     reason = ''
     try:
         health = request('/health')
+        if not isinstance(health, dict) or not isinstance(health.get('status'), str):
+            raise UnsupportedTelemetry('Unexpected /health response')
         if health.get('status') != 'ok':
             raise ValueError('Model is not ready')
         fingerprint = progress(request('/slots'))
         if fingerprint:
             restart = assess(state, now, fingerprint,
-                             stall_seconds=int(os.environ.get('STALL_SECONDS', '1800')))
+                             stall_seconds=stall_seconds)
             reason = 'Busy model made no observable progress within the stall limit'
         elif now - state.get('last_probe', 0) >= 300:
             # A real one-token inference detects GPU hangs that /health misses.
             reply = request('/completion', {'prompt': 'Hi', 'n_predict': 1,
                                             'cache_prompt': False, 'stream': False},
-                            timeout=int(os.environ.get('PROBE_TIMEOUT_SECONDS', '120')))
+                            timeout=probe_timeout)
+            if isinstance(reply, list) and len(reply) == 1:
+                reply = reply[0]
+            if not isinstance(reply, dict) or not (
+                    isinstance(reply.get('content'), str) or isinstance(reply.get('tokens_predicted'), int)):
+                raise UnsupportedTelemetry('Unexpected /completion response')
             if not reply.get('content') and not reply.get('tokens_predicted', 0):
                 raise ValueError('Inference probe returned no tokens')
             state['last_probe'] = now
             restart = assess(state, now, [])
         else:
             restart = assess(state, now, [])
-    except (OSError, ValueError, TypeError, AttributeError) as exc:
+    except (UnsupportedTelemetry, json.JSONDecodeError) as exc:
+        restart = assess(state, now, [])
+        print(f'Watchdog skipped recovery: {exc}', flush=True)
+    except (OSError, ValueError) as exc:
         restart = assess(state, now, [], probe_ok=False)
         reason = f'HTTP/inference probe failed: {exc}'
         print(reason, flush=True)
