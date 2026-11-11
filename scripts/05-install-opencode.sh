@@ -65,11 +65,19 @@ rm -f "$LAUNCHER"
 log_ok "Installed launcher: pharaoh (account=$STACK_USER, binary=$OPENCODE_BIN)"
 
 log_info "Checking that OpenCode discovers the local model…"
-MODELS_OUTPUT="$(timeout 60 opencode models local 2>&1)" || {
+MODEL_FLAGS=()
+MODEL_HELP="$("$OPENCODE_BIN" models --help 2>&1)"
+if grep -q -- '--standalone' <<<"$MODEL_HELP"; then MODEL_FLAGS+=(--standalone); fi
+MODELS_OUTPUT="$(cd "$STACK_HOME" && OPENCODE_CONFIG="$OPENCODE_CONFIG_DIR/opencode.json" \
+  timeout 60 "$OPENCODE_BIN" models "${MODEL_FLAGS[@]}" 2>&1)" || {
   log_error "OpenCode could not load the local provider: $MODELS_OUTPUT"; exit 1; }
 if ! grep -Fxq "local/$MODEL_ALIAS" <<<"$MODELS_OUTPUT"; then
   log_error "Local model is missing from OpenCode's catalog: $MODELS_OUTPUT"
   exit 1
+fi
+if ! curl -fsS --max-time 10 "http://127.0.0.1:$LLAMA_PORT/v1/models" | \
+     jq -e --arg id "$MODEL_ALIAS" 'any(.data[]; .id == $id)' >/dev/null; then
+  log_warn "Model is configured in OpenCode, but llama.cpp is not serving $MODEL_ALIAS on this host. Check systemctl status llama-cyberstrike."
 fi
 
 # sanity: the bridge daemon must exist (serves MCP over streamable-http) and

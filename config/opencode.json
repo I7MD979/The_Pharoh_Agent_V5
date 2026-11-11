@@ -4,7 +4,7 @@
     "local": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "Pharaoh Local Qwen",
-      "options": { "baseURL": "http://localhost:8000/v1", "apiKey": "none" },
+      "options": { "baseURL": "http://127.0.0.1:8000/v1", "apiKey": "none" },
       "models": { "__MODEL_ALIAS__": { "name": "Qwen3.8-27B Abliterated", "limit": { "context": 131072, "output": 32768 } } }
     }
   },

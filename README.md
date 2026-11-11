@@ -116,7 +116,7 @@ The optional vision projector is not downloaded. Installation smoke tests disabl
 ## Usage
 
 ```bash
-opencode
+pharaoh
 opencode run "List the tools available from the HexStrike MCP server."
 opencode run "Explain the results of my authorized assessment."
 
@@ -125,6 +125,10 @@ curl -fsS --max-time 10 http://127.0.0.1:8888/health
 
 bash scripts/07-verify.sh
 ```
+
+Run `pharaoh` on the Ubuntu host that serves the model. The launcher selects `local/pharaoh-agent` using the installation account's configuration. It uses a private server when OpenCode supports `--standalone`, which avoids conflicts on the shared OpenCode port.
+
+If the local model is missing from the picker, check `curl -fsS http://127.0.0.1:8000/v1/models` on that same host. If it lists `pharaoh-agent`, run `bash scripts/05-install-opencode.sh` as the installation user and reopen with `pharaoh`. If the endpoint is down, check `systemctl status llama-cyberstrike` and its journal.
 
 Verification checks registered MCP tool names and actual `tools_status` values, then calls `nmap_scan` through MCP against **127.0.0.1:8000**. It does not infer success from an agent mentioning tool names or open ports, and it does not scan external hosts by default.
 
