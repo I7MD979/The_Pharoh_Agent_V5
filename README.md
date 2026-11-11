@@ -90,7 +90,7 @@ Prefer `./install.sh` without a leading `sudo`; privileged operations request it
 | 2 | `02-download-model.sh` | Downloads the GGUF and validates its header and exact expected remote file size |
 | 3 | `03-setup-services.sh` | Installs the model service and watchdog, waits for readiness, and tests chat inference |
 | 4 | `04-install-hexstrike.sh` | Installs HexStrike dependencies, core tools, the API service, and stateless MCP launcher |
-| 5 | `05-install-opencode.sh` | Ensures Node.js 22+, installs OpenCode, backs up existing configuration, and writes the local provider/MCP configuration |
+| 5 | `05-install-opencode.sh` | Ensures Node.js 22+, installs the current `@opencode/cli@latest` on every run, and configures the local provider and MCP |
 | 6 | `06-install-all-tools.sh` | Attempts the extended apt, Go, Python, Ruby, release-binary, and source-built toolset |
 | 7 | `07-verify.sh` | Checks real API responses, installed core tools, MCP registration/execution, the watchdog timer, and an OpenCode request |
 
@@ -127,6 +127,8 @@ bash scripts/07-verify.sh
 ```
 
 Run `pharaoh` on the Ubuntu host that serves the model. The launcher selects `local/pharaoh-agent` using the installation account's configuration. It uses a private server when OpenCode supports `--standalone`, which avoids conflicts on the shared OpenCode port.
+
+To update OpenCode on an existing installation, run `bash scripts/05-install-opencode.sh` from the project directory. This installs the current npm `latest` release and updates the `pharaoh` launcher to use that executable.
 
 If the local model is missing from the picker, check `curl -fsS http://127.0.0.1:8000/v1/models` on that same host. If it lists `pharaoh-agent`, run `bash scripts/05-install-opencode.sh` as the installation user and reopen with `pharaoh`. If the endpoint is down, check `systemctl status llama-cyberstrike` and its journal.
 

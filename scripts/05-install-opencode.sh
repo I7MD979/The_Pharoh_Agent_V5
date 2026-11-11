@@ -8,7 +8,7 @@ bootstrap
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# --- Node.js (needed for npm install -g opencode-ai) --------------------------
+# --- Node.js (needed for the OpenCode npm installer) -------------------------
 if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1 || \
    ! node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)'; then
   log_info "Installing Node.js LTS (NodeSource)…"
@@ -21,24 +21,17 @@ fi
 log_info "Node $(node --version) / npm $(npm --version)"
 
 # --- opencode ------------------------------------------------------------------
-if ! command -v opencode >/dev/null 2>&1; then
-  log_info "Installing opencode-ai globally…"
-  if ! sudo npm install -g opencode-ai; then
-    log_warn "npm install failed — trying the official install script."
-    OC_SETUP="$(mktemp)"
-    curl -fsSL --retry 3 https://opencode.ai/install -o "$OC_SETUP"
-    bash "$OC_SETUP"
-    rm -f "$OC_SETUP"
-    export PATH="$STACK_HOME/.opencode/bin:$PATH"
-  fi
+NPM_PREFIX="$(sudo npm prefix -g)"
+NPM_ROOT="$(sudo npm root -g)"
+if [ -f "$NPM_ROOT/opencode-ai/package.json" ]; then
+  log_info "Removing the legacy npm package before upgrading OpenCode."
+  sudo npm uninstall -g opencode-ai
 fi
-command -v opencode >/dev/null 2>&1 || {
-  # npm global bin may not be on PATH in this shell — locate it.
-  NPM_PREFIX="$(npm config get prefix)"
-  export PATH="$NPM_PREFIX/bin:$PATH"
-}
-command -v opencode >/dev/null 2>&1 || { log_error "opencode not found after install."; exit 1; }
-log_ok "opencode: $(command -v opencode)"
+log_info "Installing the latest stable OpenCode CLI…"
+sudo npm install -g --prefer-online @opencode/cli@latest
+OPENCODE_BIN="$NPM_PREFIX/bin/opencode"
+[ -x "$OPENCODE_BIN" ] || { log_error "OpenCode executable missing at $OPENCODE_BIN"; exit 1; }
+log_ok "OpenCode $("$OPENCODE_BIN" --version) at $OPENCODE_BIN"
 
 # --- config --------------------------------------------------------------------
 mkdir -p "$OPENCODE_CONFIG_DIR"
@@ -50,11 +43,9 @@ sed -e "s|__HEXSTRIKE_DIR__|$HEXSTRIKE_DIR|g" \
     "$REPO_ROOT/config/opencode.json" > "$OPENCODE_CONFIG_DIR/opencode.json"
 log_ok "Wrote $OPENCODE_CONFIG_DIR/opencode.json"
 python3 -m json.tool "$OPENCODE_CONFIG_DIR/opencode.json" >/dev/null
-opencode --version
 
 # Record the exact binary: a second installation in ~/.opencode/bin or another
 # account can otherwise open a different CLI with different settings.
-OPENCODE_BIN="$(command -v opencode)"
 LAUNCHER="$(mktemp)"
 sed -e "s|__STACK_USER__|$STACK_USER|g" \
     -e "s|__STACK_HOME__|$STACK_HOME|g" \

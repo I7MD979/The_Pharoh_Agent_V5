@@ -24,9 +24,16 @@ cd "$STACK_HOME"
 AGENT_OUTPUT="$(mktemp)"
 trap 'rm -f "$AGENT_OUTPUT"' EXIT
 PRIVATE_FLAGS=()
-RUN_HELP="$(opencode run --help 2>&1)"
+OPENCODE_BIN=opencode
+if command -v npm >/dev/null 2>&1; then
+  NPM_PREFIX="$(sudo npm prefix -g 2>/dev/null || true)"
+  if [ -n "$NPM_PREFIX" ] && [ -x "$NPM_PREFIX/bin/opencode" ]; then
+    OPENCODE_BIN="$NPM_PREFIX/bin/opencode"
+  fi
+fi
+RUN_HELP="$("$OPENCODE_BIN" run --help 2>&1)"
 if grep -q -- '--standalone' <<<"$RUN_HELP"; then PRIVATE_FLAGS+=(--standalone); fi
-if ! timeout 600 opencode run "${PRIVATE_FLAGS[@]}" --model "local/$MODEL_ALIAS" --format json "Reply with exactly OK. Do not use tools." > "$AGENT_OUTPUT"; then
+if ! timeout 600 "$OPENCODE_BIN" run "${PRIVATE_FLAGS[@]}" --model "local/$MODEL_ALIAS" --format json "Reply with exactly OK. Do not use tools." > "$AGENT_OUTPUT"; then
   cat "$AGENT_OUTPUT"
   log_error "OpenCode could not complete a local model request."
   exit 1
