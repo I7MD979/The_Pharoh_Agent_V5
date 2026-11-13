@@ -27,7 +27,7 @@ def rpc(method, params, mcp_url):
     return result['result']
 
 
-def scan_output(result):
+def scan_output(result, port=8000):
     if result.get('isError'):
         raise ValueError(f'MCP tool failed: {result}')
     parts = []
@@ -43,8 +43,8 @@ def scan_output(result):
                 raise ValueError(f'Nmap execution failed: {parsed}')
             parts.append(parsed.get('stdout', ''))
     output = '\n'.join(parts)
-    if not re.search(r'^8000/tcp\s+open\b', output, re.MULTILINE):
-        raise ValueError(f'Local scan did not confirm the model port: {output}')
+    if not re.search(rf'^{port}/tcp\s+open\b', output, re.MULTILINE):
+        raise ValueError(f'Local scan did not confirm port {port}: {output}')
     return output
 
 
@@ -85,7 +85,7 @@ def main():
     result = rpc('tools/call', {'name': 'nmap_scan', 'arguments': {
         'target': '127.0.0.1', 'scan_type': '-sT', 'ports': str(args.model_port),
         'additional_args': '-Pn'}}, mcp_url)
-    scan_output(result)
+    scan_output(result, args.model_port)
     print(f'[OK] Real nmap scan through MCP confirmed local port {args.model_port}')
 
 
