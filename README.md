@@ -7,7 +7,7 @@
 ![CUDA](https://img.shields.io/badge/NVIDIA-CUDA-76B900?logo=nvidia&logoColor=white)
 ![Inference](https://img.shields.io/badge/Inference-Local-blue)
 
-Run a local language model, an agent CLI, and a security tools API as one managed stack. Pharaoh connects **OpenCode**, **llama.cpp**, and **HexStrike AI** through a dedicated **Model Context Protocol (MCP)** bridge, with systemd services and automatic detection of stalled inference. Both models can drive the HexStrike tools from OpenCode.
+Run a local language model, an agent CLI, and a security tools API as one managed stack. Pharaoh connects **OpenCode**, **llama.cpp**, and **HexStrike AI** through a dedicated **Model Context Protocol (MCP)** bridge, with systemd services and automatic detection of stalled inference. Every model can drive the HexStrike tools from OpenCode.
 
 Inference runs on your own GPU. Installation downloads model weights and dependencies; individual tools may access external services depending on your requests.
 
@@ -15,9 +15,9 @@ Inference runs on your own GPU. Installation downloads model weights and depende
 
 ## Highlights
 
-- **Local models.** Choose Qwen3.8-27B or CyberStrike-OffSec-35B in Q8_0 GGUF format. Both serve an OpenAI-compatible API and use the HexStrike MCP tools.
+- **Local models.** Choose Qwen3.8-27B, CyberStrike-OffSec-35B, or Qwen3.5-40B Deckard-Heretic in Q8_0 GGUF format. All serve an OpenAI-compatible API and use the HexStrike MCP tools.
 - **Agent integration:** OpenCode uses the local provider and remote HexStrike MCP tools.
-- **Both models use tools.** CyberStrike is wired to the same MCP bridge, with Code Mode and a bounded tool-output budget for tool-heavy sessions.
+- **Every model uses tools.** All profiles are wired to the same MCP bridge, with Code Mode and a bounded tool-output budget for tool-heavy sessions.
 - **Stateless MCP:** an independent HTTP bridge uses the official Python SDK without modifying upstream HexStrike source.
 - **Service management:** systemd handles startup, process failures, and service ordering.
 - **Inference monitoring:** readiness checks, token progress tracking, and bounded inference probes detect an alive but unresponsive model.
@@ -29,7 +29,7 @@ Inference runs on your own GPU. Installation downloads model weights and depende
 ```mermaid
 flowchart LR
     U[Operator] --> O[OpenCode CLI]
-    O -->|OpenAI API :8000 or :8001| L[llama.cpp / selected model]
+    O -->|OpenAI API :8000/:8001/:8002| L[llama.cpp / selected model]
     O -->|Stateless HTTP :8890/mcp| B[HexStrike MCP bridge]
     B -->|HTTP API :8888| H[HexStrike AI]
     H --> T[Installed security tools]
@@ -40,13 +40,13 @@ flowchart LR
 
 | Component | Purpose | Endpoint / service |
 | --- | --- | --- |
-| llama.cpp | GPU inference and OpenAI-compatible API | `:8000` for Qwen or `127.0.0.1:8001` for CyberStrike · `llama-cyberstrike.service` |
+| llama.cpp | GPU inference and OpenAI-compatible API | `:8000` for Qwen, `127.0.0.1:8001` for CyberStrike, or `:8002` for Deckard · `llama-cyberstrike.service` |
 | HexStrike AI | Executes installed security tools | `:8888` · `hexstrike.service` |
 | MCP bridge | Exposes tools to the agent | `127.0.0.1:8890/mcp` · `hexstrike-bridge.service` |
 | OpenCode | Interactive and scripted agent interface | `opencode` |
 | Watchdog | Checks inference and recovers stalls | `llama-watchdog.timer` / `.service` |
 
-The diagram shows the OpenCode path for either model. Qwen listens on `:8000`; CyberStrike binds to loopback `:8001`. Both options use the same `llama-cyberstrike` service, and the watchdog follows the selected API port. The HexStrike API and MCP bridge are installed for both models, so CyberStrike works as an agentic reviewer that can run tools, not just a chat endpoint.
+The diagram shows the OpenCode path for any model. Qwen listens on `:8000`; CyberStrike binds to loopback `:8001`; Deckard-Heretic listens on `:8002`. All options use the same `llama-cyberstrike` service, and the watchdog follows the selected API port. The HexStrike API and MCP bridge are installed for every model, so CyberStrike works as an agentic reviewer that can run tools, not just a chat endpoint.
 
 The bridge runs independently of the agent. Fresh MCP connections do not rely on a previous session's pipe or session ID. A transport change cannot repair stalled GPU inference; the watchdog monitors the model separately.
 
@@ -55,16 +55,18 @@ The bridge runs independently of the agent. Fresh MCP connections do not rely on
 | Requirement | Details |
 | --- | --- |
 | OS | Ubuntu **22.04 or 24.04**, x86_64, with systemd running |
-| Reference hardware | **96 GB RAM / 48 GB NVIDIA VRAM**; actual needs vary with context and configuration |
+| Reference hardware | **96 GB RAM / 48 GB NVIDIA VRAM**; a **96 GB VRAM** GPU serves every model at full context; actual needs vary with context and configuration |
 | NVIDIA driver | `nvidia-smi` must detect a working GPU before installation |
 | CUDA toolkit | Needed for source builds; the installer can install NVIDIA's `cuda-toolkit-12-8` |
-| Storage | Approximately 29 GB for Qwen or 37.8 GB for CyberStrike. Allow about 67 GB to retain both, plus space for tools, caches, builds, and upgrade backups. |
+| Storage | Approximately 29 GB for Qwen, 37.8 GB for CyberStrike, or 41.5 GB for Deckard-Heretic. Allow about 110 GB to retain all three, plus space for tools, caches, builds, and upgrade backups. |
 | Permissions | A user with sudo access, or a root account on a root-only server |
 | Network | Access to Ubuntu repositories, GitHub, Hugging Face, package registries, and NVIDIA's repository when needed |
 
 Ubuntu 22.04 is the original reference target. The installer also accepts Ubuntu 24.04; preflight acceptance does not establish compatibility of every third-party tool. Native Windows and Git Bash are unsupported targets. WSL requires an Ubuntu distribution with systemd and working GPU access.
 
-Both models use **q8_0 KV cache**, flash attention, full GPU offload, and a `262144`-token context. The KV cache grows linearly with context, so a 256k window needs many additional GB of VRAM on top of the weights; if the model service restart loops at startup, lower `-c` in the unit (see [Context size and GPU offload](#context-size-and-gpu-offload)).
+Every model uses **q8_0 KV cache**, flash attention, full GPU offload, and a `262144`-token context. The KV cache grows linearly with context, so a 256k window needs many additional GB of VRAM on top of the weights; if the model service restart loops at startup, lower `-c` in the unit (see [Context size and GPU offload](#context-size-and-gpu-offload)).
+
+Deckard-Heretic is a hybrid-attention Qwen3.5: only 24 of its 96 layers keep a KV cache (the other 72 use linear attention with a fixed recurrent state), so its full 256k q8_0 cache is roughly 12 GiB and the whole server fits in about 60 GiB of VRAM. A 96 GB GPU serves it at full context; on a 48 GB card, lower `-c`.
 
 ## Quick start
 
@@ -81,10 +83,11 @@ bash install.sh
 | --- | --- | --- | --- |
 | 1 | Qwen3.8-27B Abliterated Q8_0 | 262,144 tokens | `http://127.0.0.1:8000/v1` · `pharaoh-agent` |
 | 2 | CyberStrike-OffSec-35B Abliterated Q8_0 | 262,144 tokens | `http://127.0.0.1:8001/v1` · `pharaoh-review` |
+| 3 | Qwen3.5-40B Deckard-Heretic Q8_0 | 262,144 tokens | `http://127.0.0.1:8002/v1` · `pharaoh-deckard` |
 
-Both choices install llama.cpp, HexStrike AI, the MCP bridge, OpenCode, and the security toolset, and both serve a 262,144-token context. CyberStrike keeps a smaller output budget, and tools are exposed through Code Mode so the HexStrike tool schemas do not consume the window.
+All choices install llama.cpp, HexStrike AI, the MCP bridge, OpenCode, and the security toolset, and all serve a 262,144-token context. CyberStrike keeps a smaller output budget, and tools are exposed through Code Mode so the HexStrike tool schemas do not consume the window.
 
-The installer displays the menu on the terminal when `PHARAOH_MODEL` is unset. Press Enter to keep the configured model or select Qwen on a fresh install. Without an interactive terminal, set `PHARAOH_MODEL=qwen` or `PHARAOH_MODEL=cyberstrike` explicitly.
+The installer displays the menu on the terminal when `PHARAOH_MODEL` is unset. Press Enter to keep the configured model or select Qwen on a fresh install. Without an interactive terminal, set `PHARAOH_MODEL=qwen`, `PHARAOH_MODEL=cyberstrike`, or `PHARAOH_MODEL=deckard` explicitly.
 
 Allow time for the download and any CUDA or tool builds. A persistent terminal such as `tmux` keeps remote installations running across SSH disconnects. The preflight checks Ubuntu, systemd, and GPU visibility.
 
@@ -98,9 +101,9 @@ From the existing checkout on Ubuntu, run the following and choose a model from 
 git pull --ff-only origin main && bash install.sh
 ```
 
-To switch directly to CyberStrike, run `PHARAOH_MODEL=cyberstrike bash install.sh`. To switch back, run `PHARAOH_MODEL=qwen bash install.sh`.
+To switch directly to CyberStrike, run `PHARAOH_MODEL=cyberstrike bash install.sh`. For Deckard-Heretic, run `PHARAOH_MODEL=deckard bash install.sh`. To switch back, run `PHARAOH_MODEL=qwen bash install.sh`.
 
-If the existing service is running, it continues serving during download and file validation. Switching restarts inference and interrupts active requests. If activation or the inference check fails, the installer attempts to restore the previous systemd units and restart the previous service if it was running. Both GGUF files can stay in `~/models` for later switches.
+If the existing service is running, it continues serving during download and file validation. Switching restarts inference and interrupts active requests. If activation or the inference check fails, the installer attempts to restore the previous systemd units and restart the previous service if it was running. All GGUF files can stay in `~/models` for later switches.
 
 If Git reports local changes in `install.sh`, `start-stack.sh`, or `stop-stack.sh`, inspect them with `git diff -- install.sh start-stack.sh stop-stack.sh`. If the diff only shows `100644` to `100755` mode changes, save them before pulling.
 
@@ -135,12 +138,14 @@ The extended tool stage collects failures and **exits unsuccessfully if any were
 | --- | --- |
 | Qwen file | `Huihui-Qwen3.8-27B-abliterated-Q8_0.gguf` |
 | CyberStrike file | `Huihui-CyberStrike-OffSec-35B-abliterated-Q8_0.gguf` |
+| Deckard file | `Qwen3.5-40B-Claude-4.6-Opus-Deckard-Heretic-Uncensored-Thinking.Q8_0.gguf` |
 | OpenCode model for Qwen | `local/pharaoh-agent` |
 | OpenCode model for CyberStrike | `local/pharaoh-review` |
+| OpenCode model for Deckard | `local/pharaoh-deckard` |
 | Reasoning | Enabled, `xhigh`, preserved across turns |
 | Sampling | Temperature `1.0`, top-p `0.95`, top-k `20`, min-p `0` |
-| OpenCode output limit | `32,768` tokens (Qwen) / `8,192` tokens (CyberStrike) |
-| Context window | `262,144` tokens for both models (`-c 262144`) |
+| OpenCode output limit | `32,768` tokens (Qwen / Deckard) / `8,192` tokens (CyberStrike) |
+| Context window | `262,144` tokens for all three models (`-c 262144`) |
 | MCP tools | Code Mode, `execute` tool, 1-hour tool-call timeout |
 
 The optional vision projector is not downloaded. Installation smoke tests disable thinking only for their small test requests; normal agent requests retain the configured reasoning defaults.
@@ -301,7 +306,7 @@ Installer reruns can replace generated units. Update repository templates for pe
 
 ### Use a different GGUF
 
-For the two supported GGUF files, use the [installer to switch models](#update-and-switch-models). For a custom GGUF, update the service's `-m` path and review context, cache, sampling, and reasoning settings. Keep the service alias in sync with the client configuration.
+For the three supported GGUF files, use the [installer to switch models](#update-and-switch-models). For a custom GGUF, update the service's `-m` path and review context, cache, sampling, and reasoning settings. Keep the service alias in sync with the client configuration.
 
 To change the installer's default checkpoint, update the model profile in `scripts/common.sh` (including its `PROVIDER_NAME`, context, and output budget) and generation settings in the systemd template.
 
@@ -338,7 +343,7 @@ python3 -m venv .test-venv
 .test-venv/bin/python -m unittest discover -s tests -v
 ```
 
-Tests cover simulated five-hour generation, stalled generation, inference failures behind a healthy HTTP endpoint, startup grace, manual service stops, repeated fresh-client MCP initialize/list/call requests against a local fixture, and rendering of the OpenCode profile for both models. They do not need a GPU or execute security scans. CI runs on Python 3.10 and 3.12.
+Tests cover simulated five-hour generation, stalled generation, inference failures behind a healthy HTTP endpoint, startup grace, manual service stops, repeated fresh-client MCP initialize/list/call requests against a local fixture, and rendering of the OpenCode profile for each model. They do not need a GPU or execute security scans. CI runs on Python 3.10 and 3.12.
 
 Run the installer on your Ubuntu/GPU host for runtime validation. Step 3 checks the selected model's alias and chat response. Step 7 verifies the direct MCP path and an actual tool call through OpenCode with the selected model.
 
@@ -374,5 +379,6 @@ Run the installer on your Ubuntu/GPU host for runtime validation. Step 3 checks 
 - [Official Python MCP SDK](https://github.com/modelcontextprotocol/python-sdk) — Streamable HTTP transport.
 - [Huihui Qwen3.8-27B GGUF](https://huggingface.co/huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF)
 - [Huihui CyberStrike-OffSec-35B GGUF](https://huggingface.co/huihui-ai/Huihui-CyberStrike-OffSec-35B-abliterated-GGUF)
+- [Qwen3.5-40B Deckard-Heretic Q8_0 GGUF](https://huggingface.co/mradermacher/Qwen3.5-40B-Claude-4.6-Opus-Deckard-Heretic-Uncensored-Thinking-GGUF)
 
 Upstream projects, models, and installed tools retain their own licenses and requirements. Use security tools only on systems you own or are explicitly authorized to assess.

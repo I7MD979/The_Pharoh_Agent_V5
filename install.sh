@@ -29,7 +29,7 @@ flock -n 9 || { log_error "Another Pharaoh installation is running."; exit 1; }
 installed_unit=/etc/systemd/system/llama-cyberstrike.service
 default_model=$INSTALLED_MODEL
 if [ -z "${PHARAOH_MODEL:-}" ] && { exec 8<>/dev/tty; } 2>/dev/null; then
-  printf '%s\n' '1) Huihui Qwen3.8-27B Q8_0 (OpenCode + MCP tools)' '2) Huihui CyberStrike-OffSec-35B Q8_0 (OpenCode + MCP tools)' >&8
+  printf '%s\n' '1) Huihui Qwen3.8-27B Q8_0 (OpenCode + MCP tools)' '2) Huihui CyberStrike-OffSec-35B Q8_0 (OpenCode + MCP tools)' '3) Qwen3.5-40B Deckard-Heretic Q8_0 (OpenCode + MCP tools)' >&8
   [ ! -f "$installed_unit" ] || log_info "Applying the selection restarts inference after the model is ready on disk."
   while true; do
     printf 'Choose model [Enter keeps %s]: ' "$default_model" >&8
@@ -37,6 +37,7 @@ if [ -z "${PHARAOH_MODEL:-}" ] && { exec 8<>/dev/tty; } 2>/dev/null; then
     case "$choice" in
       1) PHARAOH_MODEL=qwen; break ;;
       2) PHARAOH_MODEL=cyberstrike; break ;;
+      3) PHARAOH_MODEL=deckard; break ;;
       '') break ;;
     esac
   done

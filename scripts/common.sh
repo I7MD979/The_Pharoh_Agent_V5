@@ -49,12 +49,30 @@ PROVIDER_NAME="Pharaoh Local Qwen"
 # install.sh still shows its interactive menu on a fresh host (no unit yet),
 # and an explicit PHARAOH_MODEL always wins.
 INSTALLED_MODEL=qwen
-if [ -f /etc/systemd/system/llama-cyberstrike.service ] && \
-   grep -Fq 'Huihui-CyberStrike-OffSec-35B-abliterated-Q8_0.gguf' /etc/systemd/system/llama-cyberstrike.service; then
-  INSTALLED_MODEL=cyberstrike
+installed_unit=/etc/systemd/system/llama-cyberstrike.service
+if [ -f "$installed_unit" ]; then
+  if grep -Fq 'Qwen3.5-40B-Claude-4.6-Opus-Deckard-Heretic-Uncensored-Thinking.Q8_0.gguf' "$installed_unit"; then
+    INSTALLED_MODEL=deckard
+  elif grep -Fq 'Huihui-CyberStrike-OffSec-35B-abliterated-Q8_0.gguf' "$installed_unit"; then
+    INSTALLED_MODEL=cyberstrike
+  fi
 fi
 case "${PHARAOH_MODEL:-$INSTALLED_MODEL}" in
   qwen) ;;
+  deckard)
+    # Hybrid-attention Qwen3.5: only 24 of 96 layers cache KV (the rest use
+    # linear attention with a fixed recurrent state), so the full 256k q8_0
+    # cache is ~12 GiB and the server fits in roughly 60 GiB of VRAM.
+    HF_REPO="mradermacher/Qwen3.5-40B-Claude-4.6-Opus-Deckard-Heretic-Uncensored-Thinking-GGUF"
+    MODEL_FILENAME="Qwen3.5-40B-Claude-4.6-Opus-Deckard-Heretic-Uncensored-Thinking.Q8_0.gguf"
+    MODEL_ALIAS="pharaoh-deckard"
+    MODEL_NAME="Qwen3.5-40B Deckard-Heretic"
+    MODEL_HOST=0.0.0.0
+    MODEL_CONTEXT=262144
+    MODEL_OUTPUT=32768
+    PROVIDER_NAME="Pharaoh Local Deckard"
+    LLAMA_PORT=8002
+    ;;
   cyberstrike)
     HF_REPO="huihui-ai/Huihui-CyberStrike-OffSec-35B-abliterated-GGUF"
     MODEL_FILENAME="Huihui-CyberStrike-OffSec-35B-abliterated-Q8_0.gguf"

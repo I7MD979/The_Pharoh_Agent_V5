@@ -12,6 +12,12 @@ PROFILES = {
         'MODEL_CONTEXT': '262144', 'MODEL_OUTPUT': '32768',
         'PROVIDER_NAME': 'Pharaoh Local Qwen',
     },
+    'deckard': {
+        'HEXSTRIKE_MCP_BRIDGE_PORT': '8890', 'MODEL_PORT': '8002',
+        'MODEL_ALIAS': 'pharaoh-deckard', 'MODEL_NAME': 'Qwen3.5-40B Deckard-Heretic',
+        'MODEL_CONTEXT': '262144', 'MODEL_OUTPUT': '32768',
+        'PROVIDER_NAME': 'Pharaoh Local Deckard',
+    },
     'cyberstrike': {
         'HEXSTRIKE_MCP_BRIDGE_PORT': '8890', 'MODEL_PORT': '8001',
         'MODEL_ALIAS': 'pharaoh-review', 'MODEL_NAME': 'CyberStrike-OffSec-35B Abliterated',
@@ -47,6 +53,9 @@ class ConfigTemplateTests(unittest.TestCase):
 
     def test_qwen_profile(self):
         self.profile('qwen')
+
+    def test_deckard_profile(self):
+        self.profile('deckard')
 
     def test_cyberstrike_profile(self):
         self.profile('cyberstrike')
