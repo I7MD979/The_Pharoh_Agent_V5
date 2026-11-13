@@ -31,17 +31,19 @@ default_model=qwen
 if [ -f "$installed_unit" ] && grep -Fq 'Huihui-CyberStrike-OffSec-35B-abliterated-Q8_0.gguf' "$installed_unit"; then
   default_model=cyberstrike
 fi
-if [ -z "${PHARAOH_MODEL:-}" ] && [ -t 0 ]; then
-  printf '%s\n' '1) Huihui Qwen3.8-27B Q8_0' '2) Huihui CyberStrike-OffSec-35B Q8_0 (local review API)'
+if [ -z "${PHARAOH_MODEL:-}" ] && { exec 8<>/dev/tty; } 2>/dev/null; then
+  printf '%s\n' '1) Huihui Qwen3.8-27B Q8_0' '2) Huihui CyberStrike-OffSec-35B Q8_0 (local review API)' >&8
   [ ! -f "$installed_unit" ] || log_info "Applying the selection restarts inference after the model is ready on disk."
   while true; do
-    read -r -p "Choose model [Enter keeps $default_model]: " choice
+    printf 'Choose model [Enter keeps %s]: ' "$default_model" >&8
+    read -r choice <&8 || break
     case "$choice" in
       1) PHARAOH_MODEL=qwen; break ;;
       2) PHARAOH_MODEL=cyberstrike; break ;;
       '') break ;;
     esac
   done
+  exec 8>&-
 fi
 export PHARAOH_MODEL="${PHARAOH_MODEL:-$default_model}"
 
