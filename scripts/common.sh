@@ -8,7 +8,7 @@ set -euo pipefail
 # When invoked through sudo, keep the real user so files land in THEIR home.
 # Run user-owned downloads/configuration as the login user, even with sudo.
 if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
-  exec sudo -H -u "$SUDO_USER" bash "$0" "$@"
+  exec sudo -H -u "$SUDO_USER" env "PHARAOH_MODEL=${PHARAOH_MODEL:-}" bash "$0" "$@"
 fi
 STACK_USER="$(id -un)"
 STACK_GROUP="$(id -gn 2>/dev/null || id -g)"
@@ -38,9 +38,24 @@ HEXSTRIKE_MCP_BRIDGE_PORT=8890
 
 HF_REPO="huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF"
 MODEL_FILENAME="Huihui-Qwen3.8-27B-abliterated-Q8_0.gguf"
-MODEL_PATH="$MODELS_DIR/$MODEL_FILENAME"
 MODEL_ALIAS="pharaoh-agent"
 MODEL_NAME="Qwen3.8-27B Abliterated"
+MODEL_HOST=0.0.0.0
+MODEL_CONTEXT=131072
+case "${PHARAOH_MODEL:-qwen}" in
+  qwen) ;;
+  cyberstrike)
+    HF_REPO="huihui-ai/Huihui-CyberStrike-OffSec-35B-abliterated-GGUF"
+    MODEL_FILENAME="Huihui-CyberStrike-OffSec-35B-abliterated-Q8_0.gguf"
+    MODEL_ALIAS="pharaoh-review"
+    MODEL_NAME="CyberStrike-OffSec-35B Abliterated"
+    MODEL_HOST=127.0.0.1
+    MODEL_CONTEXT=32768
+    LLAMA_PORT=8001
+    ;;
+  *) printf 'Unknown model: %s\n' "$PHARAOH_MODEL" >&2; exit 2 ;;
+esac
+MODEL_PATH="$MODELS_DIR/$MODEL_FILENAME"
 HEXSTRIKE_REPO="https://github.com/netcuter/Hexstrike-AI.git"
 
 # --- logging ----------------------------------------------------------------

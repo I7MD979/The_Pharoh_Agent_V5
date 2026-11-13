@@ -3,6 +3,7 @@
 # (OpenAI-compatible on :8000) + HexStrike MCP (remote streamable-http bridge daemon).
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
+[ "$MODEL_ALIAS" = pharaoh-agent ] || { log_error "This OpenCode setup requires the Qwen stack profile."; exit 2; }
 require_ubuntu_2204
 bootstrap
 

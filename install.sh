@@ -2,7 +2,7 @@
 # ============================================================================
 # The Pharaoh Agent V5 — master installer
 # Target: Ubuntu 22.04, NVIDIA GPU with CUDA (tested: 96 GB RAM / 48 GB VRAM)
-# Idempotent: safe to re-run; each step skips work that is already done.
+# Rerun to switch models or resume setup.
 # ============================================================================
 set -euo pipefail
 
@@ -22,7 +22,30 @@ if [ "$#" -ne 0 ]; then
 fi
 require_ubuntu_2204
 
-log_banner "The Pharaoh Agent V5 — local AI pentesting stack installer"
+mkdir -p "$STACK_HOME/.local/share/pharaoh"
+exec 9>"$STACK_HOME/.local/share/pharaoh/install.lock"
+flock -n 9 || { log_error "Another Pharaoh installation is running."; exit 1; }
+
+installed_unit=/etc/systemd/system/llama-cyberstrike.service
+default_model=qwen
+if [ -f "$installed_unit" ] && grep -Fq 'Huihui-CyberStrike-OffSec-35B-abliterated-Q8_0.gguf' "$installed_unit"; then
+  default_model=cyberstrike
+fi
+if [ -z "${PHARAOH_MODEL:-}" ] && [ -t 0 ]; then
+  printf '%s\n' '1) Huihui Qwen3.8-27B Q8_0' '2) Huihui CyberStrike-OffSec-35B Q8_0 (local review API)'
+  [ ! -f "$installed_unit" ] || log_info "Applying the selection restarts inference after the model is ready on disk."
+  while true; do
+    read -r -p "Choose model [Enter keeps $default_model]: " choice
+    case "$choice" in
+      1) PHARAOH_MODEL=qwen; break ;;
+      2) PHARAOH_MODEL=cyberstrike; break ;;
+      '') break ;;
+    esac
+  done
+fi
+export PHARAOH_MODEL="${PHARAOH_MODEL:-$default_model}"
+
+log_banner "The Pharaoh Agent V5 — installer"
 log_info "Repo root : $SCRIPT_DIR"
 log_info "User/Home : $STACK_USER / $STACK_HOME"
 log_info "GPU check : $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || echo 'nvidia-smi NOT FOUND — CUDA required!')"
@@ -32,8 +55,6 @@ if ! nvidia-smi --query-gpu=name --format=csv,noheader >/dev/null 2>&1; then
   exit 1
 fi
 
-bootstrap
-
 run_step() {
   local n="$1"; shift
   local script="$SCRIPT_DIR/scripts/$1"
@@ -41,14 +62,26 @@ run_step() {
   if bash "$script"; then
     log_ok "Step $n finished."
   else
-    log_error "Step $n FAILED. Fix the error above and re-run ./install.sh (completed steps are skipped)."
+    log_error "Step $n failed. Fix the error above and rerun ./install.sh."
     exit 1
   fi
 }
 
-run_step 1 01-install-llamacpp.sh
-run_step 2 02-download-model.sh
-run_step 3 03-setup-services.sh
+if [ -f "$installed_unit" ] && command -v llama-server >/dev/null; then
+  sudo -v
+  run_step 2 02-download-model.sh
+  run_step 3 03-setup-services.sh
+  if [ "$PHARAOH_MODEL" = cyberstrike ] || { [ -f /etc/systemd/system/hexstrike-bridge.service ] && command -v pharaoh >/dev/null; }; then
+    exit 0
+  fi
+else
+  bootstrap
+  run_step 1 01-install-llamacpp.sh
+  run_step 2 02-download-model.sh
+  run_step 3 03-setup-services.sh
+  [ "$PHARAOH_MODEL" != cyberstrike ] || exit 0
+fi
+
 run_step 4 04-install-hexstrike.sh
 run_step 5 05-install-opencode.sh
 run_step 6 06-install-all-tools.sh

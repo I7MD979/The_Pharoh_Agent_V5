@@ -3,6 +3,11 @@
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/common.sh"
 require_ubuntu_2204
+if grep -Fq 'Huihui-CyberStrike-OffSec-35B-abliterated-Q8_0.gguf' /etc/systemd/system/llama-cyberstrike.service; then
+  sudo systemctl start llama-cyberstrike llama-watchdog.timer
+  echo "Local review API: http://127.0.0.1:8001/v1/models"
+  exit 0
+fi
 sudo systemctl start llama-cyberstrike hexstrike hexstrike-bridge
 sudo systemctl start llama-watchdog.timer
 echo "Started. Status:"

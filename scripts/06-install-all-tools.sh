@@ -218,10 +218,33 @@ log_banner "7/7 stragglers (source builds / special cases)"
 if ! have msfconsole; then
   log_info "Installing Metasploit via Rapid7 msfinstall…"
   if curl -fsSL https://raw.githubusercontent.com/rapid7/metasploit-omnibus/master/config/templates/metasploit-framework-wrappers/msfupdate.erb \
-       -o /tmp/msfinstall && sudo bash /tmp/msfinstall >>"$TOOLS_LOG" 2>&1; then
-    ok "metasploit-framework"
+       -o /tmp/msfinstall; then
+    # Rapid7's mirror can briefly publish mismatched indexes. Restrict the
+    # source to this x86_64 installer and refresh the cache before installation.
+    if sudo bash /tmp/msfinstall >>"$TOOLS_LOG" 2>&1; then
+      :
+    else
+      source_file=/etc/apt/sources.list.d/metasploit-framework.list
+      if [ -f "$source_file" ]; then
+        sudo sed -i -E '/^deb /{
+          /\[.*arch=/b
+          /\[/s|\[|[arch=amd64 |;
+          /\[/!s|^deb |deb [arch=amd64] |
+        }' "$source_file"
+      fi
+      sudo apt-get clean >>"$TOOLS_LOG" 2>&1
+      if sudo apt-get update -o Acquire::Retries=3 >>"$TOOLS_LOG" 2>&1 &&
+         sudo apt-get install -y --no-install-recommends metasploit-framework >>"$TOOLS_LOG" 2>&1; then
+        :
+      else
+        bad "metasploit-framework (Rapid7 repository)"
+      fi
+    fi
   else
-    bad "metasploit-framework (msfinstall)"
+    bad "metasploit-framework (msfinstall download)"
+  fi
+  if have msfconsole; then
+    ok "metasploit-framework"
   fi
 fi
 

@@ -1,5 +1,5 @@
 [Unit]
-Description=llama.cpp server — Qwen3.8-27B Abliterated (Q8_0) on :8000
+Description=Pharaoh llama.cpp server (Q8_0)
 After=network.target
 Wants=network.target
 
@@ -12,8 +12,8 @@ Environment=LD_LIBRARY_PATH=__LLAMA_LIBDIR__
 ExecStart=__LLAMA_BIN__ \
   -m __MODEL_FILE__ \
   --alias __MODEL_ALIAS__ \
-  --host 0.0.0.0 --port 8000 \
-  -c 131072 -ngl 999 \
+  --host __MODEL_HOST__ --port __MODEL_PORT__ \
+  -c __MODEL_CONTEXT__ -ngl 999 \
   --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --jinja \
   --reasoning on --reasoning-effort xhigh --reasoning-preserve \
   --slots --metrics \

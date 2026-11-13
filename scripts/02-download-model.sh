@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# Step 2 — download Qwen3.8-27B Abliterated (Q8_0 GGUF).
-# Q8_0 keeps near-lossless reasoning/tool-calling quality and fits the
-# reference 48 GB VRAM GPU with room for the 128K q8_0 KV cache.
+# Step 2 — download and validate the selected Q8_0 GGUF.
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
@@ -55,7 +53,7 @@ download() {
   }
 }
 
-log_info "Downloading $HF_REPO/$MODEL_FILENAME (~29 GB) → $MODELS_DIR"
+log_info "Downloading $HF_REPO/$MODEL_FILENAME ($EXPECTED_SIZE bytes) → $MODELS_DIR"
 retry 3 download
 
 [ -f "$MODEL_PATH" ] || { log_error "Model download produced no Q8_0 GGUF file."; exit 1; }

@@ -8,7 +8,7 @@ import time
 import urllib.request
 
 SERVICE = 'llama-cyberstrike.service'
-BASE = 'http://127.0.0.1:8000'
+BASE = f"http://127.0.0.1:{os.environ.get('PHARAOH_INFERENCE_PORT', '8000')}"
 HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 

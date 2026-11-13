@@ -75,8 +75,14 @@ cd The_Pharoh_Agent_V5
 chmod +x install.sh start-stack.sh stop-stack.sh scripts/*.sh
 
 ./install.sh --check   # platform, systemd, and GPU driver checks; installs nothing
-./install.sh           # install the complete stack and verify it
+./install.sh           # choose a Q8_0 model and install it
 ```
+
+The installer offers **Qwen3.8-27B Q8_0** and **CyberStrike-OffSec-35B Q8_0**. Press Enter to keep the installed selection, or to select Qwen on a fresh install. For unattended installation, set `PHARAOH_MODEL=qwen` or `PHARAOH_MODEL=cyberstrike`.
+
+The CyberStrike 35B option serves a local OpenAI-compatible review API at `http://127.0.0.1:8001/v1` under the alias `pharaoh-review`. Submit code and findings directly for review. It uses a 32K context and a 37.8 GB download. Qwen uses port 8000 and the existing `pharaoh` launcher.
+
+Rerun `./install.sh` to switch. The existing model keeps serving during the download and file validation. Switching restarts inference and interrupts requests in flight. If service activation or the inference check fails, the installer restores the previous systemd units and restarts the previous inference service if it was running. Downloaded weights remain on disk for later switches.
 
 Allow time for the model download and possible CUDA/tool builds. Use a persistent terminal session such as `tmux` for remote installation. Preflight does not validate available memory or every dependency.
 
