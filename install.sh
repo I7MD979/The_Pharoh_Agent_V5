@@ -27,10 +27,7 @@ exec 9>"$STACK_HOME/.local/share/pharaoh/install.lock"
 flock -n 9 || { log_error "Another Pharaoh installation is running."; exit 1; }
 
 installed_unit=/etc/systemd/system/llama-cyberstrike.service
-default_model=qwen
-if [ -f "$installed_unit" ] && grep -Fq 'Huihui-CyberStrike-OffSec-35B-abliterated-Q8_0.gguf' "$installed_unit"; then
-  default_model=cyberstrike
-fi
+default_model=$INSTALLED_MODEL
 if [ -z "${PHARAOH_MODEL:-}" ] && { exec 8<>/dev/tty; } 2>/dev/null; then
   printf '%s\n' '1) Huihui Qwen3.8-27B Q8_0 (OpenCode + MCP tools)' '2) Huihui CyberStrike-OffSec-35B Q8_0 (OpenCode + MCP tools)' >&8
   [ ! -f "$installed_unit" ] || log_info "Applying the selection restarts inference after the model is ready on disk."

@@ -44,7 +44,16 @@ MODEL_HOST=0.0.0.0
 MODEL_CONTEXT=262144
 MODEL_OUTPUT=32768
 PROVIDER_NAME="Pharaoh Local Qwen"
-case "${PHARAOH_MODEL:-qwen}" in
+# Standalone runs of the numbered scripts must target the installed model even
+# when PHARAOH_MODEL is not exported: the systemd unit is the source of truth.
+# install.sh still shows its interactive menu on a fresh host (no unit yet),
+# and an explicit PHARAOH_MODEL always wins.
+INSTALLED_MODEL=qwen
+if [ -f /etc/systemd/system/llama-cyberstrike.service ] && \
+   grep -Fq 'Huihui-CyberStrike-OffSec-35B-abliterated-Q8_0.gguf' /etc/systemd/system/llama-cyberstrike.service; then
+  INSTALLED_MODEL=cyberstrike
+fi
+case "${PHARAOH_MODEL:-$INSTALLED_MODEL}" in
   qwen) ;;
   cyberstrike)
     HF_REPO="huihui-ai/Huihui-CyberStrike-OffSec-35B-abliterated-GGUF"
