@@ -28,4 +28,5 @@ unset OPENCODE_CONFIG OPENCODE_CONFIG_DIR OPENCODE_CONFIG_CONTENT
 mkdir -p "$XDG_CONFIG_HOME/opencode" "$session_dir/work"
 cp "$repo_root/config/opencode-review.json" "$XDG_CONFIG_HOME/opencode/opencode.json"
 cd "$session_dir/work"
-"$opencode_bin" --standalone --model pharaoh-local/pharaoh-review
+# The interactive command takes its model from opencode.json.
+"$opencode_bin" --standalone
