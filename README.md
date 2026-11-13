@@ -3,6 +3,7 @@
 ### Local AI infrastructure for authorized security testing
 
 [![Validate installer](https://github.com/I7MD979/The_Pharoh_Agent_V5/actions/workflows/validate.yml/badge.svg)](https://github.com/I7MD979/The_Pharoh_Agent_V5/actions/workflows/validate.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%7C%2024.04-E95420?logo=ubuntu&logoColor=white)
 ![CUDA](https://img.shields.io/badge/NVIDIA-CUDA-76B900?logo=nvidia&logoColor=white)
 ![Inference](https://img.shields.io/badge/Inference-Local-blue)
@@ -12,6 +13,12 @@ Run a local language model, an agent CLI, and a security tools API as one manage
 Inference runs on your own GPU. Installation downloads model weights and dependencies; individual tools may access external services depending on your requests.
 
 [Quick start](#quick-start) · [Architecture](#architecture) · [Requirements](#requirements) · [Operations](#operations) · [Automatic recovery](#automatic-recovery) · [Troubleshooting](#troubleshooting)
+
+## Responsible use and disclaimer
+
+The Pharaoh Agent V5 is intended for lawful, authorized security testing and research. Use it only on systems you own or have explicit permission from the owner or authorized operator to assess. Stay within the agreed scope and follow applicable laws.
+
+You are responsible for how you use the project and for obtaining any required authorization. The maintainers do not condone unauthorized or unlawful use. To the extent permitted by applicable law, the authors and copyright holders disclaim liability for claims, damages, or losses arising from such use. See the [MIT License](LICENSE) for the full warranty and liability terms.
 
 ## Highlights
 
@@ -381,4 +388,6 @@ Run the installer on your Ubuntu/GPU host for runtime validation. Step 3 checks 
 - [Huihui CyberStrike-OffSec-35B GGUF](https://huggingface.co/huihui-ai/Huihui-CyberStrike-OffSec-35B-abliterated-GGUF)
 - [Qwen3.5-40B Deckard-Heretic Q8_0 GGUF](https://huggingface.co/mradermacher/Qwen3.5-40B-Claude-4.6-Opus-Deckard-Heretic-Uncensored-Thinking-GGUF)
 
-Upstream projects, models, and installed tools retain their own licenses and requirements. Use security tools only on systems you own or are explicitly authorized to assess.
+## License
+
+The original code and documentation in this repository are available under the [MIT License](LICENSE). Upstream projects, downloaded model weights, and installed tools retain their own licenses and requirements.
