@@ -15,7 +15,7 @@ Inference runs on your own GPU. Installation downloads model weights and depende
 
 ## Highlights
 
-- **Local model:** Qwen3.8-27B Abliterated Q8_0 through an OpenAI-compatible API.
+- **Local models.** Choose Qwen3.8-27B or CyberStrike-OffSec-35B in Q8_0 GGUF format. Both serve an OpenAI-compatible API.
 - **Agent integration:** OpenCode uses the local provider and remote HexStrike MCP tools.
 - **Stateless MCP:** an independent HTTP bridge uses the official Python SDK without modifying upstream HexStrike source.
 - **Service management:** systemd handles startup, process failures, and service ordering.
@@ -39,13 +39,13 @@ flowchart LR
 
 | Component | Purpose | Endpoint / service |
 | --- | --- | --- |
-| llama.cpp | GPU inference and OpenAI-compatible API | `:8000` · `llama-cyberstrike.service` |
+| llama.cpp | GPU inference and OpenAI-compatible API | `:8000` for Qwen or `127.0.0.1:8001` for CyberStrike · `llama-cyberstrike.service` |
 | HexStrike AI | Executes installed security tools | `:8888` · `hexstrike.service` |
 | MCP bridge | Exposes tools to the agent | `127.0.0.1:8890/mcp` · `hexstrike-bridge.service` |
 | OpenCode | Interactive and scripted agent interface | `opencode` |
 | Watchdog | Checks inference and recovers stalls | `llama-watchdog.timer` / `.service` |
 
-The historical `llama-cyberstrike` service name is retained for compatibility. The model API alias is **`pharaoh-agent`**.
+The diagram shows the Qwen setup. The CyberStrike option serves a local review API directly to the operator. Both options use the same `llama-cyberstrike` service, and the watchdog follows the selected API port.
 
 The bridge runs independently of the agent. Fresh MCP connections do not rely on a previous session's pipe or session ID. A transport change cannot repair stalled GPU inference; the watchdog monitors the model separately.
 
@@ -57,13 +57,13 @@ The bridge runs independently of the agent. Fresh MCP connections do not rely on
 | Reference hardware | **96 GB RAM / 48 GB NVIDIA VRAM**; actual needs vary with context and configuration |
 | NVIDIA driver | `nvidia-smi` must detect a working GPU before installation |
 | CUDA toolkit | Needed for source builds; the installer can install NVIDIA's `cuda-toolkit-12-8` |
-| Storage | Approximately 29 GB for model weights, plus substantial space for tools, caches, builds, and upgrade backups |
+| Storage | Approximately 29 GB for Qwen or 37.8 GB for CyberStrike. Allow about 67 GB to retain both, plus space for tools, caches, builds, and upgrade backups. |
 | Permissions | A user with sudo access, or a root account on a root-only server |
 | Network | Access to Ubuntu repositories, GitHub, Hugging Face, package registries, and NVIDIA's repository when needed |
 
 Ubuntu 22.04 is the original reference target. The installer also accepts Ubuntu 24.04; preflight acceptance does not establish compatibility of every third-party tool. Native Windows and Git Bash are unsupported targets. WSL requires an Ubuntu distribution with systemd and working GPU access.
 
-The default model configuration uses **131,072 context tokens**, **q8_0 KV cache**, flash attention, and full GPU offload. Reduce context or offload when memory is insufficient.
+Both models use **q8_0 KV cache**, flash attention, and full GPU offload. Context defaults depend on the selected model.
 
 ## Quick start
 
@@ -72,21 +72,41 @@ Run on the target Ubuntu machine as the account that will own the installation:
 ```bash
 git clone https://github.com/I7MD979/The_Pharoh_Agent_V5.git
 cd The_Pharoh_Agent_V5
-chmod +x install.sh start-stack.sh stop-stack.sh scripts/*.sh
-
-./install.sh --check   # platform, systemd, and GPU driver checks; installs nothing
-./install.sh           # choose a Q8_0 model and install it
+bash install.sh --check
+bash install.sh
 ```
 
-The installer offers **Qwen3.8-27B Q8_0** and **CyberStrike-OffSec-35B Q8_0**. Press Enter to keep the installed selection, or to select Qwen on a fresh install. For unattended installation, set `PHARAOH_MODEL=qwen` or `PHARAOH_MODEL=cyberstrike`.
+| Menu | Model | Context | API base URL and alias |
+| --- | --- | --- | --- |
+| 1 | Qwen3.8-27B Abliterated Q8_0 | 131,072 tokens | `http://127.0.0.1:8000/v1` · `pharaoh-agent` |
+| 2 | CyberStrike-OffSec-35B Abliterated Q8_0 | 32,768 tokens | `http://127.0.0.1:8001/v1` · `pharaoh-review` |
 
-The CyberStrike 35B option serves a local OpenAI-compatible review API at `http://127.0.0.1:8001/v1` under the alias `pharaoh-review`. Submit code and findings directly for review. It uses a 32K context and a 37.8 GB download. Qwen uses port 8000 and the existing `pharaoh` launcher.
+The installer displays the menu on the terminal when `PHARAOH_MODEL` is unset. Press Enter to keep the configured model or select Qwen on a fresh install. Without an interactive terminal, set `PHARAOH_MODEL=qwen` or `PHARAOH_MODEL=cyberstrike` explicitly.
 
-Rerun `./install.sh` to switch. The existing model keeps serving during the download and file validation. Switching restarts inference and interrupts requests in flight. If service activation or the inference check fails, the installer restores the previous systemd units and restarts the previous inference service if it was running. Downloaded weights remain on disk for later switches.
+Allow time for the download and any CUDA or tool builds. A persistent terminal such as `tmux` keeps remote installations running across SSH disconnects. The preflight checks Ubuntu, systemd, and GPU visibility.
 
-Allow time for the model download and possible CUDA/tool builds. Use a persistent terminal session such as `tmux` for remote installation. Preflight does not validate available memory or every dependency.
+Run `bash install.sh` as the installation account. The installer uses sudo when it needs elevated permissions.
 
-Prefer `./install.sh` without a leading `sudo`; privileged operations request it as needed. When invoked through sudo, the scripts switch back to the login user so models and configuration go into that user's home.
+### Update and switch models
+
+From the existing checkout on Ubuntu, run the following and choose a model from the menu.
+
+```bash
+git pull --ff-only origin main && bash install.sh
+```
+
+To switch directly to CyberStrike, run `PHARAOH_MODEL=cyberstrike bash install.sh`. To switch back, run `PHARAOH_MODEL=qwen bash install.sh`.
+
+If the existing service is running, it continues serving during download and file validation. Switching restarts inference and interrupts active requests. If activation or the inference check fails, the installer attempts to restore the previous systemd units and restart the previous service if it was running. Both GGUF files can stay in `~/models` for later switches.
+
+If Git reports local changes in `install.sh`, `start-stack.sh`, or `stop-stack.sh`, inspect them with `git diff -- install.sh start-stack.sh stop-stack.sh`. If the diff only shows `100644` to `100755` mode changes, save them before pulling.
+
+```bash
+git stash push -m "Local script permissions" -- install.sh start-stack.sh stop-stack.sh &&
+git pull --ff-only origin main
+```
+
+The commands in this README invoke the scripts through Bash and work with either permission mode.
 
 ### Installation stages
 
@@ -100,19 +120,19 @@ Prefer `./install.sh` without a leading `sudo`; privileged operations request it
 | 6 | `06-install-all-tools.sh` | Attempts the extended apt, Go, Python, Ruby, release-binary, and source-built toolset |
 | 7 | `07-verify.sh` | Checks real API responses, installed core tools, MCP registration/execution, the watchdog timer, and an OpenCode request |
 
-All numbered scripts live in `scripts/`. Rerunning reuses validated components where possible, but may update packages/checkouts, regenerate configuration, rebuild tools, and restart services. It is not a no-op.
+All numbered scripts live in `scripts/`. A fresh CyberStrike install finishes after step 3. When the installer finds the model unit and `llama-server` on an existing host, it starts at step 2. On an existing Qwen setup with the bridge unit and `pharaoh` launcher present, this path finishes after step 3 as well.
 
 Replaced llama.cpp installations are retained as `~/llama.cpp.backup.<timestamp>.<pid>`. Existing OpenCode configuration is backed up before regeneration. If a stage fails, fix its reported error and rerun that script or the master installer.
 
-The extended tool stage collects failures and **exits unsuccessfully if any were recorded**. The master installer does not report a complete installation in that case.
+The extended tool stage collects failures and **exits unsuccessfully if any were recorded**. For a previous failure in step 6, rerun that stage directly after resolving the reported error, since an existing installation can finish at step 3.
 
 ### Model defaults
 
 | Setting | Value |
 | --- | --- |
-| Repository | [`huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF`](https://huggingface.co/huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF) |
-| File | `Huihui-Qwen3.8-27B-abliterated-Q8_0.gguf` |
-| API alias / OpenCode model | `pharaoh-agent` / `local/pharaoh-agent` |
+| Qwen file | `Huihui-Qwen3.8-27B-abliterated-Q8_0.gguf` |
+| CyberStrike file | `Huihui-CyberStrike-OffSec-35B-abliterated-Q8_0.gguf` |
+| OpenCode model for Qwen | `local/pharaoh-agent` |
 | Reasoning | Enabled, `xhigh`, preserved across turns |
 | Sampling | Temperature `1.0`, top-p `0.95`, top-k `20`, min-p `0` |
 | OpenCode output limit | `32,768` tokens |
@@ -120,6 +140,30 @@ The extended tool stage collects failures and **exits unsuccessfully if any were
 The optional vision projector is not downloaded. Installation smoke tests disable thinking only for their small test requests; normal agent requests retain the configured reasoning defaults.
 
 ## Usage
+
+### CyberStrike review API
+
+Check that the local endpoint lists `pharaoh-review`.
+
+```bash
+curl -fsS --max-time 10 http://127.0.0.1:8001/v1/models
+```
+
+Use `http://127.0.0.1:8001/v1` as the base URL and `pharaoh-review` as the model ID in your API client for code and findings review.
+
+On the Ubuntu desktop that runs the service, open [the local llama.cpp chat](http://127.0.0.1:8001/) if the installed build includes the web UI.
+
+### CyberStrike in OpenCode
+
+With `pharaoh-review` running and OpenCode 2.2.7 or newer installed on the same Ubuntu host, run this from the repository:
+
+```bash
+bash scripts/opencode-review.sh
+```
+
+This opens a separate OpenCode session with `pharaoh-local/pharaoh-review` selected. Paste code or findings into the chat for review. The session disables tools and MCP and uses a temporary profile, so its chat history is discarded on exit.
+
+### Qwen with OpenCode
 
 ```bash
 pharaoh
@@ -143,15 +187,15 @@ Verification checks registered MCP tool names and actual `tools_status` values, 
 ## Operations
 
 ```bash
-./start-stack.sh
-./stop-stack.sh
+bash start-stack.sh
+bash stop-stack.sh
 
-systemctl status llama-cyberstrike hexstrike hexstrike-bridge --no-pager
+systemctl status llama-cyberstrike --no-pager
 systemctl status llama-watchdog.timer --no-pager
 systemctl list-timers llama-watchdog.timer
 ```
 
-Start/stop helpers include the watchdog. Its checks leave a manually stopped model service alone.
+The start helper reads the installed model selection. For CyberStrike it starts inference and the watchdog. For Qwen it also starts the API and bridge services. The stop helper stops inference, the watchdog, and any installed API and bridge services.
 
 ### Logs and diagnostics
 
@@ -162,7 +206,8 @@ journalctl -u hexstrike-bridge -f
 journalctl -u llama-watchdog.service -n 80 --no-pager
 
 nvidia-smi
-curl -fsS --max-time 10 http://127.0.0.1:8000/slots
+curl -fsS --max-time 10 http://127.0.0.1:8000/slots  # Qwen
+curl -fsS --max-time 10 http://127.0.0.1:8001/slots  # CyberStrike
 ```
 
 | Location | Contents |
@@ -174,7 +219,7 @@ curl -fsS --max-time 10 http://127.0.0.1:8000/slots
 
 ### Network boundaries
 
-The MCP bridge binds to loopback. The supplied model and upstream HexStrike API configuration may listen on all interfaces; restrict access to trusted clients. Use an SSH tunnel or explicit access controls for remote clients. The generated local provider does not require a hosted model API key.
+The CyberStrike review API and MCP bridge bind to loopback. Qwen binds to all interfaces, and the upstream HexStrike API may do so as well. Restrict access to trusted clients and use an SSH tunnel or explicit access controls for remote clients.
 
 ## Automatic recovery
 
@@ -236,9 +281,9 @@ sudo systemctl restart llama-cyberstrike
 
 Installer reruns can replace generated units. Update repository templates for persistent installer defaults, or maintain systemd overrides. Replacing `ExecStart` in an override requires clearing the original with an empty `ExecStart=` first.
 
-### Replace the model
+### Use a different GGUF
 
-Download a compatible GGUF, update the service's `-m` path, and review context, cache, sampling, and reasoning settings for that model. Retain `--alias pharaoh-agent` to preserve the provider configuration, then rerun verification.
+For the two supported GGUF files, use the [installer to switch models](#update-and-switch-models). For a custom GGUF, update the service's `-m` path and review context, cache, sampling, and reasoning settings. Keep the service alias in sync with the client configuration.
 
 To change the installer's default checkpoint, update `HF_REPO` and `MODEL_FILENAME` in `scripts/common.sh`, the metadata in `config/opencode.json`, and generation settings in the systemd template.
 
@@ -247,6 +292,8 @@ To change the installer's default checkpoint, update `HF_REPO` and `MODEL_FILENA
 | Symptom | Action |
 | --- | --- |
 | Unsupported platform / systemd unavailable | Run on the target Ubuntu host. Enable systemd first when using WSL. |
+| Model menu missing | Update the checkout and run `bash install.sh` from an interactive terminal with `PHARAOH_MODEL` unset, or select it directly with `PHARAOH_MODEL=cyberstrike bash install.sh`. |
+| APT reports `File has unexpected size` for a package index | The repository served an index that differs from its release metadata. Retry `sudo apt-get update` after the mirror synchronizes. If the error appears during bootstrap, it must clear before the installer reaches the numbered stages. |
 | `nvidia-smi` missing or failing | Fix the driver and GPU visibility before installation; a toolkit alone does not repair the driver. |
 | Prebuilt fails with `GLIBC_*` or CUDA runtime errors | Step 1 falls back to source and validates the replacement before promoting it. |
 | CMake cannot locate CUDA | Use a complete NVIDIA toolkit. Step 1 passes its compiler and matching `CUDAToolkit_ROOT`; a distro `nvcc` on PATH alone is insufficient. |
@@ -272,7 +319,7 @@ python3 -m venv .test-venv
 
 Tests cover simulated five-hour generation, stalled generation, inference failures behind a healthy HTTP endpoint, startup grace, manual service stops, and repeated fresh-client MCP initialize/list/call requests against a local fixture. They do not need a GPU or execute security scans. CI runs on Python 3.10 and 3.12.
 
-These tests do not establish that a fresh Ubuntu/GPU installation or a multi-hour inference workload has passed. Run the installer and `scripts/07-verify.sh` on your deployment host for runtime validation.
+Run the installer on your Ubuntu/GPU host for runtime validation. Step 3 checks the selected model's alias and chat response. Step 7 is for the Qwen stack.
 
 ## Repository layout
 
@@ -304,6 +351,7 @@ These tests do not establish that a fresh Ubuntu/GPU installation or a multi-hou
 - [HexStrike AI](https://github.com/netcuter/Hexstrike-AI) — tools API and MCP definitions.
 - [OpenCode](https://opencode.ai/) — agent CLI.
 - [Official Python MCP SDK](https://github.com/modelcontextprotocol/python-sdk) — Streamable HTTP transport.
-- [Huihui model repository](https://huggingface.co/huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF) — selected model weights.
+- [Huihui Qwen3.8-27B GGUF](https://huggingface.co/huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF)
+- [Huihui CyberStrike-OffSec-35B GGUF](https://huggingface.co/huihui-ai/Huihui-CyberStrike-OffSec-35B-abliterated-GGUF)
 
 Upstream projects, models, and installed tools retain their own licenses and requirements. Use security tools only on systems you own or are explicitly authorized to assess.
