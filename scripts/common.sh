@@ -42,6 +42,8 @@ MODEL_ALIAS="pharaoh-agent"
 MODEL_NAME="Qwen3.8-27B Abliterated"
 MODEL_HOST=0.0.0.0
 MODEL_CONTEXT=131072
+MODEL_OUTPUT=32768
+PROVIDER_NAME="Pharaoh Local Qwen"
 case "${PHARAOH_MODEL:-qwen}" in
   qwen) ;;
   cyberstrike)
@@ -51,6 +53,10 @@ case "${PHARAOH_MODEL:-qwen}" in
     MODEL_NAME="CyberStrike-OffSec-35B Abliterated"
     MODEL_HOST=127.0.0.1
     MODEL_CONTEXT=32768
+    # The HexStrike bridge exposes 150+ tools. CyberStrike has a much smaller
+    # window than Qwen, so keep its output budget modest.
+    MODEL_OUTPUT=8192
+    PROVIDER_NAME="Pharaoh Local CyberStrike"
     LLAMA_PORT=8001
     ;;
   *) printf 'Unknown model: %s\n' "$PHARAOH_MODEL" >&2; exit 2 ;;

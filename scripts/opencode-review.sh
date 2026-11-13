@@ -18,6 +18,12 @@ curl -fsS --max-time 5 http://127.0.0.1:8001/v1/models |
     exit 1
   }
 
+MCP_BRIDGE_PORT="${PHARAOH_MCP_BRIDGE_PORT:-8890}"
+if ! bash -c "</dev/tcp/127.0.0.1/$MCP_BRIDGE_PORT" 2>/dev/null; then
+  echo "The HexStrike MCP bridge is not listening on :$MCP_BRIDGE_PORT; run scripts/04-install-hexstrike.sh or bash start-stack.sh." >&2
+  exit 1
+fi
+
 session_dir="$(mktemp -d /tmp/pharaoh-review.XXXXXXXX)"
 trap 'rm -rf -- "$session_dir"' EXIT
 export XDG_CONFIG_HOME="$session_dir/config"
@@ -26,7 +32,8 @@ export XDG_STATE_HOME="$session_dir/state"
 export XDG_CACHE_HOME="$session_dir/cache"
 unset OPENCODE_CONFIG OPENCODE_CONFIG_DIR OPENCODE_CONFIG_CONTENT
 mkdir -p "$XDG_CONFIG_HOME/opencode" "$session_dir/work"
-cp "$repo_root/config/opencode-review.json" "$XDG_CONFIG_HOME/opencode/opencode.json"
+sed -e "s|__HEXSTRIKE_MCP_BRIDGE_PORT__|$MCP_BRIDGE_PORT|g" \
+  "$repo_root/config/opencode-review.json" > "$XDG_CONFIG_HOME/opencode/opencode.json"
 cd "$session_dir/work"
 # The interactive command takes its model from opencode.json.
 "$opencode_bin" --standalone

@@ -7,7 +7,7 @@
 ![CUDA](https://img.shields.io/badge/NVIDIA-CUDA-76B900?logo=nvidia&logoColor=white)
 ![Inference](https://img.shields.io/badge/Inference-Local-blue)
 
-Run a local language model, an agent CLI, and a security tools API as one managed stack. Pharaoh connects **OpenCode**, **llama.cpp**, and **HexStrike AI** through a dedicated **Model Context Protocol (MCP)** bridge, with systemd services and automatic detection of stalled inference.
+Run a local language model, an agent CLI, and a security tools API as one managed stack. Pharaoh connects **OpenCode**, **llama.cpp**, and **HexStrike AI** through a dedicated **Model Context Protocol (MCP)** bridge, with systemd services and automatic detection of stalled inference. Both models can drive the HexStrike tools from OpenCode.
 
 Inference runs on your own GPU. Installation downloads model weights and dependencies; individual tools may access external services depending on your requests.
 
@@ -15,8 +15,9 @@ Inference runs on your own GPU. Installation downloads model weights and depende
 
 ## Highlights
 
-- **Local models.** Choose Qwen3.8-27B or CyberStrike-OffSec-35B in Q8_0 GGUF format. Both serve an OpenAI-compatible API.
+- **Local models.** Choose Qwen3.8-27B or CyberStrike-OffSec-35B in Q8_0 GGUF format. Both serve an OpenAI-compatible API and use the HexStrike MCP tools.
 - **Agent integration:** OpenCode uses the local provider and remote HexStrike MCP tools.
+- **Both models use tools.** CyberStrike is wired to the same MCP bridge, with Code Mode and a bounded tool-output budget to fit its 32k context.
 - **Stateless MCP:** an independent HTTP bridge uses the official Python SDK without modifying upstream HexStrike source.
 - **Service management:** systemd handles startup, process failures, and service ordering.
 - **Inference monitoring:** readiness checks, token progress tracking, and bounded inference probes detect an alive but unresponsive model.
@@ -28,7 +29,7 @@ Inference runs on your own GPU. Installation downloads model weights and depende
 ```mermaid
 flowchart LR
     U[Operator] --> O[OpenCode CLI]
-    O -->|OpenAI API :8000| L[llama.cpp / Qwen3.8-27B]
+    O -->|OpenAI API :8000 or :8001| L[llama.cpp / selected model]
     O -->|Stateless HTTP :8890/mcp| B[HexStrike MCP bridge]
     B -->|HTTP API :8888| H[HexStrike AI]
     H --> T[Installed security tools]
@@ -45,7 +46,7 @@ flowchart LR
 | OpenCode | Interactive and scripted agent interface | `opencode` |
 | Watchdog | Checks inference and recovers stalls | `llama-watchdog.timer` / `.service` |
 
-The diagram shows the Qwen setup. The CyberStrike option serves a local review API directly to the operator. Both options use the same `llama-cyberstrike` service, and the watchdog follows the selected API port.
+The diagram shows the OpenCode path for either model. Qwen listens on `:8000`; CyberStrike binds to loopback `:8001`. Both options use the same `llama-cyberstrike` service, and the watchdog follows the selected API port. The HexStrike API and MCP bridge are installed for both models, so CyberStrike works as an agentic reviewer that can run tools, not just a chat endpoint.
 
 The bridge runs independently of the agent. Fresh MCP connections do not rely on a previous session's pipe or session ID. A transport change cannot repair stalled GPU inference; the watchdog monitors the model separately.
 
@@ -80,6 +81,8 @@ bash install.sh
 | --- | --- | --- | --- |
 | 1 | Qwen3.8-27B Abliterated Q8_0 | 131,072 tokens | `http://127.0.0.1:8000/v1` · `pharaoh-agent` |
 | 2 | CyberStrike-OffSec-35B Abliterated Q8_0 | 32,768 tokens | `http://127.0.0.1:8001/v1` · `pharaoh-review` |
+
+Both choices install llama.cpp, HexStrike AI, the MCP bridge, OpenCode, and the security toolset. CyberStrike keeps a 32,768-token context, so it uses Code Mode for tool access and a smaller output budget.
 
 The installer displays the menu on the terminal when `PHARAOH_MODEL` is unset. Press Enter to keep the configured model or select Qwen on a fresh install. Without an interactive terminal, set `PHARAOH_MODEL=qwen` or `PHARAOH_MODEL=cyberstrike` explicitly.
 
@@ -118,9 +121,9 @@ The commands in this README invoke the scripts through Bash and work with either
 | 4 | `04-install-hexstrike.sh` | Installs HexStrike dependencies, core tools, the API service, and stateless MCP launcher |
 | 5 | `05-install-opencode.sh` | Ensures Node.js 22+, installs the current `@opencode/cli@latest` on every run, and configures the local provider and MCP |
 | 6 | `06-install-all-tools.sh` | Attempts the extended apt, Go, Python, Ruby, release-binary, and source-built toolset |
-| 7 | `07-verify.sh` | Checks real API responses, installed core tools, MCP registration/execution, the watchdog timer, and an OpenCode request |
+| 7 | `07-verify.sh` | Checks real API responses, installed core tools, MCP registration/execution, the watchdog timer, and a real OpenCode tool call |
 
-All numbered scripts live in `scripts/`. A fresh CyberStrike install finishes after step 3. When the installer finds the model unit and `llama-server` on an existing host, it starts at step 2. On an existing Qwen setup with the bridge unit and `pharaoh` launcher present, this path finishes after step 3 as well.
+All numbered scripts live in `scripts/`. When the installer finds the model unit and `llama-server` on an existing host, it starts at step 2. A resumed installation stops after step 3 only when the bridge, the `pharaoh` launcher, and an OpenCode profile for the selected model are already present.
 
 Replaced llama.cpp installations are retained as `~/llama.cpp.backup.<timestamp>.<pid>`. Existing OpenCode configuration is backed up before regeneration. If a stage fails, fix its reported error and rerun that script or the master installer.
 
@@ -133,9 +136,11 @@ The extended tool stage collects failures and **exits unsuccessfully if any were
 | Qwen file | `Huihui-Qwen3.8-27B-abliterated-Q8_0.gguf` |
 | CyberStrike file | `Huihui-CyberStrike-OffSec-35B-abliterated-Q8_0.gguf` |
 | OpenCode model for Qwen | `local/pharaoh-agent` |
+| OpenCode model for CyberStrike | `local/pharaoh-review` |
 | Reasoning | Enabled, `xhigh`, preserved across turns |
 | Sampling | Temperature `1.0`, top-p `0.95`, top-k `20`, min-p `0` |
-| OpenCode output limit | `32,768` tokens |
+| OpenCode output limit | `32,768` tokens (Qwen) / `8,192` tokens (CyberStrike) |
+| MCP tools | Code Mode, `execute` tool, 1-hour tool-call timeout |
 
 The optional vision projector is not downloaded. Installation smoke tests disable thinking only for their small test requests; normal agent requests retain the configured reasoning defaults.
 
@@ -161,7 +166,18 @@ With `pharaoh-review` running and OpenCode 2.2.7 or newer installed on the same 
 bash scripts/opencode-review.sh
 ```
 
-This opens a separate OpenCode session with `pharaoh-local/pharaoh-review` selected. Paste code or findings into the chat for review. The session disables tools and MCP and uses a temporary profile, so its chat history is discarded on exit.
+This opens a separate OpenCode session with `pharaoh-local/pharaoh-review` selected. Paste code or findings into the chat for review. The session loads the HexStrike MCP tools, so the model can validate a finding with `nmap`, `nuclei`, `sqlmap`, and the other installed tools while it answers. It uses a temporary profile, so its chat history is discarded on exit.
+
+The tool server must be running first; the launcher stops with a message if `127.0.0.1:8890` is not listening. Because CyberStrike has a 32,768-token window, tools are exposed through Code Mode and long tool output is capped.
+
+### CyberStrike with the installed launcher
+
+`pharaoh` selects the model from the installed configuration. After switching to CyberStrike it opens `local/pharaoh-review` with the same MCP tools:
+
+```bash
+pharaoh
+opencode run "Scan 127.0.0.1 with nmap_scan and report the open ports."
+```
 
 ### Qwen with OpenCode
 
@@ -176,7 +192,7 @@ curl -fsS --max-time 10 http://127.0.0.1:8888/health
 bash scripts/07-verify.sh
 ```
 
-Run `pharaoh` on the Ubuntu host that serves the model. The launcher selects `local/pharaoh-agent` using the installation account's configuration. It uses a private server when OpenCode supports `--standalone`, which avoids conflicts on the shared OpenCode port.
+Run `pharaoh` on the Ubuntu host that serves the model. The launcher selects the configured local model (`local/pharaoh-agent` for Qwen, `local/pharaoh-review` for CyberStrike) using the installation account's configuration. It uses a private server when OpenCode supports `--standalone`, which avoids conflicts on the shared OpenCode port.
 
 To update OpenCode on an existing installation, run `bash scripts/05-install-opencode.sh` from the project directory. This installs the current npm `latest` release and updates the `pharaoh` launcher to use that executable.
 
@@ -195,7 +211,7 @@ systemctl status llama-watchdog.timer --no-pager
 systemctl list-timers llama-watchdog.timer
 ```
 
-The start helper reads the installed model selection. For CyberStrike it starts inference and the watchdog. For Qwen it also starts the API and bridge services. The stop helper stops inference, the watchdog, and any installed API and bridge services.
+The start helper starts inference, the installed API and bridge services, and the watchdog. The stop helper stops inference, the watchdog, and any installed API and bridge services.
 
 ### Logs and diagnostics
 
@@ -264,7 +280,8 @@ sudo systemctl restart llama-watchdog.timer
 | Source | Role / installed location |
 | --- | --- |
 | `scripts/common.sh` | Model identity, paths, ports, and installation helpers |
-| `config/opencode.json` | Template for `~/.config/opencode/opencode.json` |
+| `config/opencode.json` | Template for `~/.config/opencode/opencode.json`; holds the selected model and the `hexstrike` MCP server |
+| `config/opencode-review.json` | Temporary profile used by `scripts/opencode-review.sh` |
 | `systemd/llama-cyberstrike.service` | Model service template |
 | `systemd/hexstrike*.service` | API and MCP service templates |
 | `systemd/llama-watchdog.*` | Monitoring service and timer |
@@ -285,7 +302,7 @@ Installer reruns can replace generated units. Update repository templates for pe
 
 For the two supported GGUF files, use the [installer to switch models](#update-and-switch-models). For a custom GGUF, update the service's `-m` path and review context, cache, sampling, and reasoning settings. Keep the service alias in sync with the client configuration.
 
-To change the installer's default checkpoint, update `HF_REPO` and `MODEL_FILENAME` in `scripts/common.sh`, the metadata in `config/opencode.json`, and generation settings in the systemd template.
+To change the installer's default checkpoint, update the model profile in `scripts/common.sh` (including its `PROVIDER_NAME`, context, and output budget) and generation settings in the systemd template.
 
 ## Troubleshooting
 
@@ -304,7 +321,10 @@ To change the installer's default checkpoint, update `HF_REPO` and `MODEL_FILENA
 | Service active but generation stops after hours | Inspect watchdog logs and `latest-diagnostic.log` to distinguish inference timeouts, lack of progress, and memory/driver failures. |
 | Extended tool stage fails | Review `~/pharaoh-tool-failures.txt` and `~/pharaoh-tools-install.log`, fix reported errors, and rerun step 6. |
 | MCP bridge does not start | Check `journalctl -u hexstrike-bridge`; rerun step 4 to install the SDK and launcher. |
-| OpenCode cannot reach MCP | Confirm `127.0.0.1:8890/mcp` is listening and the generated configuration uses `type: remote`. |
+| OpenCode cannot reach MCP | Confirm `127.0.0.1:8890/mcp` is listening and the generated configuration uses `type: remote` under `mcp.servers`. |
+| Model answers without calling tools | Confirm `capabilities.tools` is `true`, that `--jinja` is in the model unit, and check the model journal for a tool-template warning. Reduce the prompt, or set `codemode: false` on `hexstrike` to expose tools directly. |
+| Tool calls fail with context errors | CyberStrike has a 32,768-token window. Keep prompts short, lower `tool_output.max_bytes`, or use Qwen for long sessions. |
+| CyberStrike stops answering after a large tool result | Restart inference (`sudo systemctl restart llama-cyberstrike`) and rescan a narrower target; the bridge stays connected independently. |
 | Empty final chat content | Increase the token budget for reasoning requests. Installation tests disable thinking for their small probes. |
 | Python CLI conflicts | Rerun step 6 to install CLIs in isolated environments; avoid adding packages to system Python. |
 
@@ -317,9 +337,9 @@ python3 -m venv .test-venv
 .test-venv/bin/python -m unittest discover -s tests -v
 ```
 
-Tests cover simulated five-hour generation, stalled generation, inference failures behind a healthy HTTP endpoint, startup grace, manual service stops, and repeated fresh-client MCP initialize/list/call requests against a local fixture. They do not need a GPU or execute security scans. CI runs on Python 3.10 and 3.12.
+Tests cover simulated five-hour generation, stalled generation, inference failures behind a healthy HTTP endpoint, startup grace, manual service stops, repeated fresh-client MCP initialize/list/call requests against a local fixture, and rendering of the OpenCode profile for both models. They do not need a GPU or execute security scans. CI runs on Python 3.10 and 3.12.
 
-Run the installer on your Ubuntu/GPU host for runtime validation. Step 3 checks the selected model's alias and chat response. Step 7 is for the Qwen stack.
+Run the installer on your Ubuntu/GPU host for runtime validation. Step 3 checks the selected model's alias and chat response. Step 7 verifies the direct MCP path and an actual tool call through OpenCode with the selected model.
 
 ## Repository layout
 

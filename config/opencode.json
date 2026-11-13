@@ -1,20 +1,31 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "provider": {
+  "providers": {
     "local": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Pharaoh Local Qwen",
-      "options": { "baseURL": "http://127.0.0.1:8000/v1", "apiKey": "none" },
-      "models": { "__MODEL_ALIAS__": { "name": "Qwen3.8-27B Abliterated", "limit": { "context": 131072, "output": 32768 } } }
+      "name": "__PROVIDER_NAME__",
+      "package": "@opencode/ai/providers/openai-compatible",
+      "settings": { "baseURL": "http://127.0.0.1:__MODEL_PORT__/v1", "apiKey": "none" },
+      "models": {
+        "__MODEL_ALIAS__": {
+          "name": "__MODEL_NAME__",
+          "capabilities": { "tools": true, "input": ["text"], "output": ["text"] },
+          "limit": { "context": __MODEL_CONTEXT__, "output": __MODEL_OUTPUT__ }
+        }
+      }
     }
   },
   "model": "local/__MODEL_ALIAS__",
+  "tool_output": { "max_lines": 2000, "max_bytes": 51200 },
   "mcp": {
-    "hexstrike": {
-      "type": "remote",
-      "url": "http://127.0.0.1:__HEXSTRIKE_MCP_BRIDGE_PORT__/mcp",
-      "enabled": true,
-      "timeout": 3600000
+    "timeout": { "startup": 30000, "catalog": 60000, "execution": 3600000 },
+    "servers": {
+      "hexstrike": {
+        "type": "remote",
+        "url": "http://127.0.0.1:__HEXSTRIKE_MCP_BRIDGE_PORT__/mcp",
+        "oauth": false,
+        "codemode": true,
+        "timeout": { "execution": 3600000 }
+      }
     }
   }
 }

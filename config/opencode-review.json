@@ -9,9 +9,22 @@
       "models": {
         "pharaoh-review": {
           "name": "CyberStrike-OffSec-35B (Review)",
-          "capabilities": { "tools": false, "input": ["text"], "output": ["text"] },
+          "capabilities": { "tools": true, "input": ["text"], "output": ["text"] },
           "limit": { "context": 32768, "output": 8192 }
         }
+      }
+    }
+  },
+  "tool_output": { "max_lines": 2000, "max_bytes": 51200 },
+  "mcp": {
+    "timeout": { "startup": 30000, "catalog": 60000, "execution": 3600000 },
+    "servers": {
+      "hexstrike": {
+        "type": "remote",
+        "url": "http://127.0.0.1:__HEXSTRIKE_MCP_BRIDGE_PORT__/mcp",
+        "oauth": false,
+        "codemode": true,
+        "timeout": { "execution": 3600000 }
       }
     }
   },
@@ -19,7 +32,12 @@
     { "action": "provider.use", "resource": "*", "effect": "deny" },
     { "action": "provider.use", "resource": "pharaoh-local", "effect": "allow" },
     { "action": "mcp.use", "resource": "*", "effect": "deny" },
+    { "action": "mcp.use", "resource": "hexstrike", "effect": "allow" },
     { "action": "plugin.use", "resource": "*", "effect": "deny" },
-    { "action": "tool.use", "resource": "*", "effect": "deny" }
+    { "action": "tool.use", "resource": "*", "effect": "deny" },
+    { "action": "tool.use", "resource": "execute:*", "effect": "allow" },
+    { "action": "tool.use", "resource": "hexstrike_*:*", "effect": "allow" },
+    { "action": "tool.use", "resource": "opencode_read_mcp_resource:*", "effect": "allow" },
+    { "action": "tool.use", "resource": "opencode_list_mcp_resources:*", "effect": "allow" }
   ]
 }

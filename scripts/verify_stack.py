@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Check real API responses and MCP tools, without relying on agent prose."""
+import argparse
 import json
 import re
 import sys
@@ -18,8 +19,8 @@ def request(url, payload=None):
         return json.load(response)
 
 
-def rpc(method, params):
-    result = request('http://127.0.0.1:8890/mcp',
+def rpc(method, params, mcp_url):
+    result = request(mcp_url,
                      {'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': params})
     if 'error' in result:
         raise ValueError(result['error'])
@@ -48,10 +49,18 @@ def scan_output(result):
 
 
 def main():
-    models = request('http://127.0.0.1:8000/v1/models')
-    assert any(m['id'] == 'pharaoh-agent' for m in models['data']), 'Missing model alias'
-    reply = request('http://127.0.0.1:8000/v1/chat/completions', {
-        'model': 'pharaoh-agent', 'messages': [{'role': 'user', 'content': 'Say OK'}],
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--model-port', type=int, default=8000)
+    parser.add_argument('--model-alias', default='pharaoh-agent')
+    parser.add_argument('--mcp-port', type=int, default=8890)
+    args = parser.parse_args()
+    model_base = f'http://127.0.0.1:{args.model_port}'
+    mcp_url = f'http://127.0.0.1:{args.mcp_port}/mcp'
+
+    models = request(f'{model_base}/v1/models')
+    assert any(m['id'] == args.model_alias for m in models['data']), 'Missing model alias'
+    reply = request(f'{model_base}/v1/chat/completions', {
+        'model': args.model_alias, 'messages': [{'role': 'user', 'content': 'Say OK'}],
         'max_tokens': 32, 'chat_template_kwargs': {'enable_thinking': False}})
     assert (reply['choices'][0]['message'].get('content') or '').strip(), 'Empty completion'
     print('[OK] Model alias and actual chat inference')
@@ -60,11 +69,11 @@ def main():
         assert health.get('tools_status', {}).get(name) is True, f'{name} is unavailable'
     print('[OK] Required tools are installed (not just listed)')
     initialized = rpc('initialize', {'protocolVersion': '2025-03-26', 'capabilities': {},
-                                    'clientInfo': {'name': 'pharaoh-verify', 'version': '1'}})
+                                    'clientInfo': {'name': 'pharaoh-verify', 'version': '1'}}, mcp_url)
     assert initialized['serverInfo']['name'] == 'hexstrike-ai-mcp'
     names, cursor = set(), None
     while True:
-        result = rpc('tools/list', {} if cursor is None else {'cursor': cursor})
+        result = rpc('tools/list', {} if cursor is None else {'cursor': cursor}, mcp_url)
         names.update(tool['name'] for tool in result['tools'])
         cursor = result.get('nextCursor')
         if not cursor:
@@ -74,9 +83,10 @@ def main():
     print(f'[OK] Stateless MCP handshake and {len(names)} registered tools')
     # Test the complete bridge -> tools API -> nmap path against this host only.
     result = rpc('tools/call', {'name': 'nmap_scan', 'arguments': {
-        'target': '127.0.0.1', 'scan_type': '-sT', 'ports': '8000', 'additional_args': '-Pn'}})
+        'target': '127.0.0.1', 'scan_type': '-sT', 'ports': str(args.model_port),
+        'additional_args': '-Pn'}}, mcp_url)
     scan_output(result)
-    print('[OK] Real nmap scan through MCP confirmed local port 8000')
+    print(f'[OK] Real nmap scan through MCP confirmed local port {args.model_port}')
 
 
 if __name__ == '__main__':

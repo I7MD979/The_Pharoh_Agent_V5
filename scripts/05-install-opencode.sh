@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Step 5 — install opencode and wire it to the local Qwen3.8 agentic model
-# (OpenAI-compatible on :8000) + HexStrike MCP (remote streamable-http bridge daemon).
+# Step 5 — install opencode and wire it to the selected local model
+# (OpenAI-compatible on :8000 for Qwen or :8001 for CyberStrike) and the
+# HexStrike MCP tools (remote streamable-http bridge daemon on :8890).
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
-[ "$MODEL_ALIAS" = pharaoh-agent ] || { log_error "This OpenCode setup requires the Qwen stack profile."; exit 2; }
 require_ubuntu_2204
 bootstrap
 
@@ -40,7 +40,12 @@ mkdir -p "$OPENCODE_CONFIG_DIR"
   cp -p "$OPENCODE_CONFIG_DIR/opencode.json" "$OPENCODE_CONFIG_DIR/opencode.json.backup.$(date +%Y%m%d%H%M%S).$$"
 sed -e "s|__HEXSTRIKE_DIR__|$HEXSTRIKE_DIR|g" \
     -e "s|__HEXSTRIKE_MCP_BRIDGE_PORT__|$HEXSTRIKE_MCP_BRIDGE_PORT|g" \
+    -e "s|__MODEL_PORT__|$LLAMA_PORT|g" \
     -e "s|__MODEL_ALIAS__|$MODEL_ALIAS|g" \
+    -e "s|__MODEL_NAME__|$MODEL_NAME|g" \
+    -e "s|__MODEL_CONTEXT__|$MODEL_CONTEXT|g" \
+    -e "s|__MODEL_OUTPUT__|$MODEL_OUTPUT|g" \
+    -e "s|__PROVIDER_NAME__|$PROVIDER_NAME|g" \
     "$REPO_ROOT/config/opencode.json" > "$OPENCODE_CONFIG_DIR/opencode.json"
 log_ok "Wrote $OPENCODE_CONFIG_DIR/opencode.json"
 python3 -m json.tool "$OPENCODE_CONFIG_DIR/opencode.json" >/dev/null
@@ -51,6 +56,7 @@ LAUNCHER="$(mktemp)"
 sed -e "s|__STACK_USER__|$STACK_USER|g" \
     -e "s|__STACK_HOME__|$STACK_HOME|g" \
     -e "s|__OPENCODE_BIN__|$OPENCODE_BIN|g" \
+    -e "s|__MODEL_REF__|local/$MODEL_ALIAS|g" \
     "$REPO_ROOT/scripts/pharaoh.sh" > "$LAUNCHER"
 sudo install -m 0755 "$LAUNCHER" /usr/local/bin/pharaoh
 rm -f "$LAUNCHER"
@@ -79,6 +85,17 @@ fi
 
 if bash -c "</dev/tcp/127.0.0.1/$HEXSTRIKE_MCP_BRIDGE_PORT" 2>/dev/null; then
   log_ok "MCP bridge is listening on http://127.0.0.1:$HEXSTRIKE_MCP_BRIDGE_PORT/mcp"
+  # Plain `mcp list` reads the generated profile and reports per-server state.
+  # Do not add --standalone: 2.2.6 prints "No MCP servers configured" there even
+  # with a valid project profile.
+  MCP_LIST=""
+  if MCP_LIST="$(cd "$STACK_HOME" && OPENCODE_CONFIG="$OPENCODE_CONFIG_DIR/opencode.json" \
+       timeout 120 "$OPENCODE_BIN" mcp list 2>&1)" && \
+     grep 'hexstrike' <<<"$MCP_LIST" | grep -q 'connected'; then
+    log_ok "OpenCode lists the hexstrike MCP server as connected"
+  else
+    log_warn "OpenCode did not report hexstrike connected: ${MCP_LIST:-no output from 'opencode mcp list'}"
+  fi
 else
   log_warn "MCP bridge not reachable on :$HEXSTRIKE_MCP_BRIDGE_PORT yet ($(systemctl is-active hexstrike-bridge 2>/dev/null || echo 'service not installed?')). Re-run step 4 to install it."
 fi

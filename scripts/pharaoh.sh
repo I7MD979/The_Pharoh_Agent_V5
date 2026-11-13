@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installed by step 5 with the owning account and CLI path substituted.
+# Installed by step 5 with the owning account, CLI path, and model substituted.
 set -euo pipefail
 STACK_USER='__STACK_USER__'
 STACK_HOME='__STACK_HOME__'
@@ -23,4 +23,4 @@ export XDG_CONFIG_HOME="$STACK_HOME/.config"
 flags=()
 help_text="$("$OPENCODE_BIN" --help 2>&1)"
 if grep -q -- '--standalone' <<<"$help_text"; then flags+=(--standalone); fi
-exec "$OPENCODE_BIN" "${flags[@]}" --model local/pharaoh-agent "$@"
+exec "$OPENCODE_BIN" "${flags[@]}" --model __MODEL_REF__ "$@"

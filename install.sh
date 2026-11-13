@@ -32,7 +32,7 @@ if [ -f "$installed_unit" ] && grep -Fq 'Huihui-CyberStrike-OffSec-35B-abliterat
   default_model=cyberstrike
 fi
 if [ -z "${PHARAOH_MODEL:-}" ] && { exec 8<>/dev/tty; } 2>/dev/null; then
-  printf '%s\n' '1) Huihui Qwen3.8-27B Q8_0' '2) Huihui CyberStrike-OffSec-35B Q8_0 (local review API)' >&8
+  printf '%s\n' '1) Huihui Qwen3.8-27B Q8_0 (OpenCode + MCP tools)' '2) Huihui CyberStrike-OffSec-35B Q8_0 (OpenCode + MCP tools)' >&8
   [ ! -f "$installed_unit" ] || log_info "Applying the selection restarts inference after the model is ready on disk."
   while true; do
     printf 'Choose model [Enter keeps %s]: ' "$default_model" >&8
@@ -73,7 +73,12 @@ if [ -f "$installed_unit" ] && command -v llama-server >/dev/null; then
   sudo -v
   run_step 2 02-download-model.sh
   run_step 3 03-setup-services.sh
-  if [ "$PHARAOH_MODEL" = cyberstrike ] || { [ -f /etc/systemd/system/hexstrike-bridge.service ] && command -v pharaoh >/dev/null; }; then
+  # Resume only when the agent is already wired to the selected model; a model
+  # switch has to regenerate the OpenCode profile and MCP registration.
+  if [ -f /etc/systemd/system/hexstrike-bridge.service ] && command -v pharaoh >/dev/null &&
+     [ -f "$OPENCODE_CONFIG_DIR/opencode.json" ] &&
+     grep -Fq "local/$MODEL_ALIAS" "$OPENCODE_CONFIG_DIR/opencode.json" &&
+     grep -Fq "127.0.0.1:$LLAMA_PORT/v1" "$OPENCODE_CONFIG_DIR/opencode.json"; then
     exit 0
   fi
 else
@@ -81,7 +86,6 @@ else
   run_step 1 01-install-llamacpp.sh
   run_step 2 02-download-model.sh
   run_step 3 03-setup-services.sh
-  [ "$PHARAOH_MODEL" != cyberstrike ] || exit 0
 fi
 
 run_step 4 04-install-hexstrike.sh
@@ -90,7 +94,7 @@ run_step 6 06-install-all-tools.sh
 run_step 7 07-verify.sh
 
 log_banner "INSTALL COMPLETE"
-log_ok "llama.cpp   → http://localhost:8000  (model: $MODEL_ALIAS)"
+log_ok "llama.cpp   → http://localhost:$LLAMA_PORT  (model: $MODEL_ALIAS)"
 log_ok "HexStrike   → http://localhost:8888  (MCP bridge: streamable-http on :$HEXSTRIKE_MCP_BRIDGE_PORT)"
-log_ok "opencode    → run 'opencode' to start the agent"
+log_ok "opencode    → run 'pharaoh' to start the agent with $MODEL_ALIAS and HexStrike tools"
 log_info "Manage with: ./start-stack.sh / ./stop-stack.sh"
