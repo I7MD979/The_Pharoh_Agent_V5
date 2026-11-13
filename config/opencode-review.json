@@ -10,7 +10,7 @@
         "pharaoh-review": {
           "name": "CyberStrike-OffSec-35B (Review)",
           "capabilities": { "tools": true, "input": ["text"], "output": ["text"] },
-          "limit": { "context": 32768, "output": 8192 }
+          "limit": { "context": 262144, "output": 8192 }
         }
       }
     }

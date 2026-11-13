@@ -9,13 +9,13 @@ PROFILES = {
     'qwen': {
         'HEXSTRIKE_MCP_BRIDGE_PORT': '8890', 'MODEL_PORT': '8000',
         'MODEL_ALIAS': 'pharaoh-agent', 'MODEL_NAME': 'Qwen3.8-27B Abliterated',
-        'MODEL_CONTEXT': '131072', 'MODEL_OUTPUT': '32768',
+        'MODEL_CONTEXT': '262144', 'MODEL_OUTPUT': '32768',
         'PROVIDER_NAME': 'Pharaoh Local Qwen',
     },
     'cyberstrike': {
         'HEXSTRIKE_MCP_BRIDGE_PORT': '8890', 'MODEL_PORT': '8001',
         'MODEL_ALIAS': 'pharaoh-review', 'MODEL_NAME': 'CyberStrike-OffSec-35B Abliterated',
-        'MODEL_CONTEXT': '32768', 'MODEL_OUTPUT': '8192',
+        'MODEL_CONTEXT': '262144', 'MODEL_OUTPUT': '8192',
         'PROVIDER_NAME': 'Pharaoh Local CyberStrike',
     },
 }

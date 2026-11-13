@@ -17,7 +17,7 @@ Inference runs on your own GPU. Installation downloads model weights and depende
 
 - **Local models.** Choose Qwen3.8-27B or CyberStrike-OffSec-35B in Q8_0 GGUF format. Both serve an OpenAI-compatible API and use the HexStrike MCP tools.
 - **Agent integration:** OpenCode uses the local provider and remote HexStrike MCP tools.
-- **Both models use tools.** CyberStrike is wired to the same MCP bridge, with Code Mode and a bounded tool-output budget to fit its 32k context.
+- **Both models use tools.** CyberStrike is wired to the same MCP bridge, with Code Mode and a bounded tool-output budget for tool-heavy sessions.
 - **Stateless MCP:** an independent HTTP bridge uses the official Python SDK without modifying upstream HexStrike source.
 - **Service management:** systemd handles startup, process failures, and service ordering.
 - **Inference monitoring:** readiness checks, token progress tracking, and bounded inference probes detect an alive but unresponsive model.
@@ -64,7 +64,7 @@ The bridge runs independently of the agent. Fresh MCP connections do not rely on
 
 Ubuntu 22.04 is the original reference target. The installer also accepts Ubuntu 24.04; preflight acceptance does not establish compatibility of every third-party tool. Native Windows and Git Bash are unsupported targets. WSL requires an Ubuntu distribution with systemd and working GPU access.
 
-Both models use **q8_0 KV cache**, flash attention, and full GPU offload. Context defaults depend on the selected model.
+Both models use **q8_0 KV cache**, flash attention, full GPU offload, and a `262144`-token context. The KV cache grows linearly with context, so a 256k window needs many additional GB of VRAM on top of the weights; if the model service restart loops at startup, lower `-c` in the unit (see [Context size and GPU offload](#context-size-and-gpu-offload)).
 
 ## Quick start
 
@@ -79,10 +79,10 @@ bash install.sh
 
 | Menu | Model | Context | API base URL and alias |
 | --- | --- | --- | --- |
-| 1 | Qwen3.8-27B Abliterated Q8_0 | 131,072 tokens | `http://127.0.0.1:8000/v1` · `pharaoh-agent` |
-| 2 | CyberStrike-OffSec-35B Abliterated Q8_0 | 32,768 tokens | `http://127.0.0.1:8001/v1` · `pharaoh-review` |
+| 1 | Qwen3.8-27B Abliterated Q8_0 | 262,144 tokens | `http://127.0.0.1:8000/v1` · `pharaoh-agent` |
+| 2 | CyberStrike-OffSec-35B Abliterated Q8_0 | 262,144 tokens | `http://127.0.0.1:8001/v1` · `pharaoh-review` |
 
-Both choices install llama.cpp, HexStrike AI, the MCP bridge, OpenCode, and the security toolset. CyberStrike keeps a 32,768-token context, so it uses Code Mode for tool access and a smaller output budget.
+Both choices install llama.cpp, HexStrike AI, the MCP bridge, OpenCode, and the security toolset, and both serve a 262,144-token context. CyberStrike keeps a smaller output budget, and tools are exposed through Code Mode so the HexStrike tool schemas do not consume the window.
 
 The installer displays the menu on the terminal when `PHARAOH_MODEL` is unset. Press Enter to keep the configured model or select Qwen on a fresh install. Without an interactive terminal, set `PHARAOH_MODEL=qwen` or `PHARAOH_MODEL=cyberstrike` explicitly.
 
@@ -140,6 +140,7 @@ The extended tool stage collects failures and **exits unsuccessfully if any were
 | Reasoning | Enabled, `xhigh`, preserved across turns |
 | Sampling | Temperature `1.0`, top-p `0.95`, top-k `20`, min-p `0` |
 | OpenCode output limit | `32,768` tokens (Qwen) / `8,192` tokens (CyberStrike) |
+| Context window | `262,144` tokens for both models (`-c 262144`) |
 | MCP tools | Code Mode, `execute` tool, 1-hour tool-call timeout |
 
 The optional vision projector is not downloaded. Installation smoke tests disable thinking only for their small test requests; normal agent requests retain the configured reasoning defaults.
@@ -168,7 +169,7 @@ bash scripts/opencode-review.sh
 
 This opens a separate OpenCode session with `pharaoh-local/pharaoh-review` selected. Paste code or findings into the chat for review. The session loads the HexStrike MCP tools, so the model can validate a finding with `nmap`, `nuclei`, `sqlmap`, and the other installed tools while it answers. It uses a temporary profile, so its chat history is discarded on exit.
 
-The tool server must be running first; the launcher stops with a message if `127.0.0.1:8890` is not listening. Because CyberStrike has a 32,768-token window, tools are exposed through Code Mode and long tool output is capped.
+The tool server must be running first; the launcher stops with a message if `127.0.0.1:8890` is not listening. Tools are exposed through Code Mode and long tool output is capped, so large scan results do not flood the context window.
 
 ### CyberStrike with the installed launcher
 
@@ -289,7 +290,7 @@ sudo systemctl restart llama-watchdog.timer
 
 ### Context size and GPU offload
 
-Edit the model service's `ExecStart` settings: for example, lower `-c 131072` to `-c 65536` or `-c 32768`. Keep the OpenCode model context limit in sync, and monitor actual allocation with `nvidia-smi`.
+Edit the model service's `ExecStart` settings: for example, lower `-c 262144` to `-c 131072` or `-c 65536`. Keep the OpenCode model context limit in sync, and monitor actual allocation with `nvidia-smi`. Serving `-c` above the GGUF's trained context length allocates the KV cache but degrades long-range quality unless you also configure RoPE scaling.
 
 ```bash
 sudo systemctl daemon-reload
@@ -323,7 +324,7 @@ To change the installer's default checkpoint, update the model profile in `scrip
 | MCP bridge does not start | Check `journalctl -u hexstrike-bridge`; rerun step 4 to install the SDK and launcher. |
 | OpenCode cannot reach MCP | Confirm `127.0.0.1:8890/mcp` is listening and the generated configuration uses `type: remote` under `mcp.servers`. |
 | Model answers without calling tools | Confirm `capabilities.tools` is `true`, that `--jinja` is in the model unit, and check the model journal for a tool-template warning. Reduce the prompt, or set `codemode: false` on `hexstrike` to expose tools directly. |
-| Tool calls fail with context errors | CyberStrike has a 32,768-token window. Keep prompts short, lower `tool_output.max_bytes`, or use Qwen for long sessions. |
+| Tool calls fail with context errors | Keep prompts short and lower `tool_output.max_bytes`. The KV cache scales with context; check `nvidia-smi` and reduce `-c` in the model unit if VRAM runs out. |
 | CyberStrike stops answering after a large tool result | Restart inference (`sudo systemctl restart llama-cyberstrike`) and rescan a narrower target; the bridge stays connected independently. |
 | Empty final chat content | Increase the token budget for reasoning requests. Installation tests disable thinking for their small probes. |
 | Python CLI conflicts | Rerun step 6 to install CLIs in isolated environments; avoid adding packages to system Python. |

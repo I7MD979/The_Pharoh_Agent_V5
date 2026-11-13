@@ -41,7 +41,7 @@ MODEL_FILENAME="Huihui-Qwen3.8-27B-abliterated-Q8_0.gguf"
 MODEL_ALIAS="pharaoh-agent"
 MODEL_NAME="Qwen3.8-27B Abliterated"
 MODEL_HOST=0.0.0.0
-MODEL_CONTEXT=131072
+MODEL_CONTEXT=262144
 MODEL_OUTPUT=32768
 PROVIDER_NAME="Pharaoh Local Qwen"
 case "${PHARAOH_MODEL:-qwen}" in
@@ -52,9 +52,8 @@ case "${PHARAOH_MODEL:-qwen}" in
     MODEL_ALIAS="pharaoh-review"
     MODEL_NAME="CyberStrike-OffSec-35B Abliterated"
     MODEL_HOST=127.0.0.1
-    MODEL_CONTEXT=32768
-    # The HexStrike bridge exposes 150+ tools. CyberStrike has a much smaller
-    # window than Qwen, so keep its output budget modest.
+    MODEL_CONTEXT=262144
+    # CyberStrike runs with xhigh reasoning, so keep its output budget modest.
     MODEL_OUTPUT=8192
     PROVIDER_NAME="Pharaoh Local CyberStrike"
     LLAMA_PORT=8001
